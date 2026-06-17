@@ -1,0 +1,15 @@
+# Codegen tuning applied to every build in this workspace.
+#
+# target-cpu=x86-64-v3 is a safe, portable production baseline: it enables AVX2,
+# BMI2, FMA, etc. (any Intel Haswell / AMD Excavator or newer — essentially all
+# server hardware since ~2015). It is a large step up from the default `x86-64`
+# baseline (which assumes only SSE2) for hot paths like JSON serialization.
+#
+# On a DEDICATED bare-metal box where you build on the same machine you deploy to
+# (T2/T3), switch to `native` to squeeze out every ISA extension the exact CPU has:
+#     rustflags = ["-C", "target-cpu=native"]
+# Do NOT use `native` for portable/container images you ship to other hosts —
+# the binary may SIGILL on a CPU lacking those instructions.
+
+[build]
+rustflags = ["-C", "target-cpu=x86-64-v3"]

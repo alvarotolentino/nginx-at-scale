@@ -1,0 +1,24 @@
+[package]
+name = "server"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "server"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# lux (https://github.com/lux-db/lux) is a Redis-compatible (RESP) server. We run
+# it as a separate service (docker-compose `lux` on :6379) and connect to it as a
+# Redis client — no in-process embedding. Any RESP client works; we use redis-rs.
+redis = { version = "1", features = ["tokio-comp", "connection-manager"] }
+uuid = { version = "1", features = ["v4"] }
+rand = "0.8"
+anyhow = "1"

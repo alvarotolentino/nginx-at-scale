@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["server"]
+
+[profile.release]
+# Optimize hard for the benchmark binary: fat LTO + single codegen unit so the
+# upstream Rust service is never the bottleneck while we tune Nginx/kernel.
+opt-level = 3        # max runtime speed (default for release, pinned explicit)
+lto = "fat"          # whole-program inlining across crate boundaries
+codegen-units = 1    # one unit → best optimization, slower compile (acceptable for prod)
+panic = "abort"      # no unwind tables → smaller binary, no landing pads
+strip = "symbols"    # strip debug/symbol tables from the final binary (smaller image)
+incremental = false  # incremental caching off for release (reproducible, fully optimized)
+
+# Faster, lighter dependency builds while iterating, without touching release output.
+[profile.dev.package."*"]
+opt-level = 1
