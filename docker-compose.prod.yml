@@ -1,0 +1,28 @@
+# Production override. Use alongside the base file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Differences vs the dev stack:
+#   - backend is BUILT from app/backend/Dockerfile into a small immutable image
+#     (optimized release binary, no source mount, no cargo-run-from-source)
+#   - lux image pinned to a fixed tag for reproducibility
+#   - restart policies for unattended operation
+
+services:
+  lux:
+    # Pin a concrete tag in production (replace with the digest/tag you validate).
+    image: ghcr.io/lux-db/lux:latest
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./app/backend
+      dockerfile: Dockerfile
+    image: onebn-backend:prod
+    # The built image has no source mount and runs the compiled binary directly.
+    volumes: []
+    command: null
+    restart: unless-stopped
+
+  nginx:
+    restart: unless-stopped
