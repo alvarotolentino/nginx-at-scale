@@ -1,0 +1,57 @@
+# =============================================================================
+# lux — Redis-compatible (RESP) in-memory DB backing the demo app.
+# Loopback-only, runs as the unprivileged `luxsvc` system user, heavily sandboxed.
+# Installed to /etc/systemd/system/lux.service by scripts/install-target.sh.
+# =============================================================================
+[Unit]
+Description=lux RESP server (1B Shop data store)
+Documentation=https://github.com/lux-db/lux
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=luxsvc
+Group=luxsvc
+ExecStart=/usr/local/bin/lux
+Restart=on-failure
+RestartSec=2
+
+# ---- configuration (lux reads LUX_* env vars, no CLI flags) ------------------
+# Bind loopback-only: lux must never be reachable from the network. Nginx and the
+# outside world never touch it — only the backend on the same host does.
+Environment=LUX_BIND_HOST=127.0.0.1
+Environment=LUX_PORT=6379
+Environment=LUX_DATA_DIR=/var/lib/lux
+
+# ---- sandboxing / attack-surface reduction ----------------------------------
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallArchitectures=native
+# No privileged ports, no special caps needed.
+CapabilityBoundingSet=
+AmbientCapabilities=
+# Only the data dir is writable; everything else is read-only.
+ReadWritePaths=/var/lib/lux
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

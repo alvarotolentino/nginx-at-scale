@@ -1,0 +1,57 @@
+# =============================================================================
+# 1B Shop backend — Axum API serving realistic dynamic traffic.
+# Loopback-only, runs as the unprivileged `appsvc` system user, heavily sandboxed.
+# Started after lux; the backend retries the initial connection so ordering is soft.
+# Installed to /etc/systemd/system/backend.service by scripts/install-target.sh.
+# =============================================================================
+[Unit]
+Description=1B Shop Rust backend (Axum)
+After=network-online.target lux.service
+Wants=network-online.target lux.service
+
+[Service]
+Type=simple
+User=appsvc
+Group=appsvc
+ExecStart=/usr/local/bin/1b-backend
+Restart=on-failure
+RestartSec=2
+
+# ---- configuration ----------------------------------------------------------
+# Bind loopback-only — the backend is reachable only through Nginx, never directly.
+Environment=BIND_ADDR=127.0.0.1:8080
+Environment=REDIS_URL=redis://127.0.0.1:6379
+Environment=RUST_LOG=info
+# CORS stays OFF in production (same-origin via Nginx). Do NOT set CORS_DEV here.
+
+# ---- sandboxing / attack-surface reduction ----------------------------------
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallArchitectures=native
+# The backend binds an ephemeral client port to lux and listens on 8080 (>1024):
+# no privileged-port capability required.
+CapabilityBoundingSet=
+AmbientCapabilities=
+# Stateless: no writable paths needed (logs go to the journal via stdout).
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
