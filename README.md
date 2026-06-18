@@ -11,20 +11,35 @@ realistic static + dynamic traffic so concurrency numbers are meaningful, not sy
 
 ## Architecture
 
+Two nodes. The **target** is the tuned bare-metal box under test; the **tester** is a
+separate, isolated machine that generates load. They're kept apart on purpose — running
+the load generator on the target steals CPU/IRQs from the thing being measured.
+
 ```
-[wrk / k6]  →  Nginx (:80/:443)
-                 ├── /      → static React SPA  (nginx/static → /srv/static)
-                 └── /api/  → Rust backend (:8080, Axum)
-                                 └── redis://lux:6379 (RESP) → lux server (Redis-compatible DB)
+   TESTER node (isolated)                     TARGET node (bare metal, tuned)
+   ┌──────────────────────┐                   ┌────────────────────────────────────────┐
+   │ scripts/load-test.sh │                   │ nftables: only 22/80/443 inbound       │
+   │   wrk / wrk2 / k6     │── HTTPS :443 ────▶│ nginx (systemd, CAP_NET_BIND_SERVICE)  │
+   │   --target https://IP │                   │   ├── /     → /var/www/1b-shop (SPA)   │
+   └──────────────────────┘                   │   └── /api/ → 127.0.0.1:8080           │
+                                              │ backend (systemd, appsvc, loopback)    │
+                                              │   └── redis://127.0.0.1:6379           │
+                                              │ lux (systemd, luxsvc, loopback, 0700)  │
+                                              └────────────────────────────────────────┘
 ```
 
-- **Frontend**: React + Vite, built to static files, served directly by Nginx. Paginated
-  product dashboard; one shared bundled image for all products.
-- **Backend**: Rust + Axum. Connects to **lux** as a Redis client (`redis-rs`,
-  auto-reconnecting `ConnectionManager`). Seeds 100 products / 500 orders on startup
-  (idempotent).
-- **DB**: [lux](https://github.com/lux-db/lux) — a Redis-compatible (RESP) server, run as
-  its own service on `:6379`. Configured via `LUX_*` env vars (default in-memory + snapshots).
+- **No Docker on the target.** App components run as **systemd** services so the kernel,
+  network stack, NUMA topology, and NIC tuning the layers exercise are the *real* host's —
+  not a container's namespaced copy. (Docker is kept in [`dev/`](dev/) for local dev only.)
+- **Frontend**: React + Vite, built to static files served directly by nginx from
+  `/var/www/1b-shop`. Paginated dashboard; one shared bundled image for all products.
+- **Backend**: Rust + Axum, bound **loopback-only** (`127.0.0.1:8080`). Connects to lux via
+  `redis-rs` (auto-reconnecting `ConnectionManager`); seeds 100 products / 500 orders on
+  startup (idempotent). Runs as the unprivileged `appsvc` user.
+- **DB**: [lux](https://github.com/lux-db/lux) — Redis-compatible (RESP) server, **loopback-
+  only** on `:6379`, as the `luxsvc` user with a `0700` data dir.
+- **Security**: TLS 1.2/1.3 + HSTS, strict CSP and security headers, nftables default-drop
+  firewall, and systemd sandboxing on every service. See [Section 15](docs/sections/15-security.md).
 
 ## Hardware Tiers
 
@@ -56,58 +71,55 @@ the improvement delta clearly visible across hardware.
 | 12 | Advanced: FreeBSD Networking Stack | [docs/sections/12-freebsd.md](docs/sections/12-freebsd.md) |
 | 13 | Results Summary & Takeaways | [docs/sections/13-results.md](docs/sections/13-results.md) |
 | 14 | Appendix: Custom Kernel Build | [docs/sections/14-kernel-build.md](docs/sections/14-kernel-build.md) |
+| 15 | Security Hardening & Attack-Surface Reduction | [docs/sections/15-security.md](docs/sections/15-security.md) |
 
 ## Prerequisites
 
-- **OS**: Debian 12 (Bookworm) minimal install (runs unmodified on Ubuntu 24.04 LTS after hardening)
-- `git`, `make`, `curl`
-- **Docker** + **Docker Compose v2** (for the local stack)
-- For native (non-Docker) builds: Rust (latest stable, ≥ 1.85), Node 20
-- See [docs/sections/00-prerequisites.md](docs/sections/00-prerequisites.md) for the full toolchain (wrk, wrk2, k6, Rust, Node 20).
+- **Target node** — Debian 12 (Bookworm) minimal, bare metal. Everything else (nginx,
+  Rust ≥ 1.85, Node 20, numactl, nftables, libaio) is installed by `install-target.sh`.
+- **Tester node** — a separate VM/instance with `wrk`, `wrk2`, `k6`.
+- See [docs/sections/00-prerequisites.md](docs/sections/00-prerequisites.md) for the full
+  two-node setup and load tooling.
 
 ## Quick Start
 
+**On the target** (bare-metal Debian 12) — one script provisions the whole stack:
+
 ```bash
 git clone <this-repo> && cd highthroughput
+sudo scripts/install-target.sh        # nginx + backend + lux (systemd), TLS, firewall, baseline
 
-# Build the demo app (frontend static + Rust backend) and bring it up
-docker compose --profile build run --rm frontend-build   # builds React → nginx/static
-docker compose up -d lux backend nginx                   # lux DB + backend + baseline nginx
-
-# Apply the first optimization layer and measure
+# Apply the first optimization layer and snapshot the box state
 sudo scripts/apply-layer-1.sh
-sudo scripts/measure.sh --label layer-1 --tier 1
 ```
 
-Run a full sweep across every layer:
+**On the tester** (separate node) — generate load against the target:
 
 ```bash
-sudo scripts/run-all-layers.sh --tier 1
+scripts/load-test.sh --target https://<target-ip> --label layer-1 --tier 1
+```
+
+Full sweep (target applies + snapshots every layer, pausing for the tester between each):
+
+```bash
+sudo scripts/apply-all-layers.sh --tier 1
+# copy the tester's results back, then:  scripts/generate-report.sh --tier 1
 # → results/tier-1/REPORT.md
 ```
 
-## Production Build
+> Just want to poke at the app locally? The Docker stack in [`dev/`](dev/) brings it up in
+> one command — but it is **not** the benchmark target (containers hide the very tuning
+> this project measures).
 
-The dev stack above compiles the backend from source on each boot (`cargo run`). For a
-production-grade run, use the optimized build: a minified + precompressed frontend and an
-immutable backend image built from a multi-stage Dockerfile.
+## Build optimizations
 
-```bash
-# Frontend: minified bundle (es2020, console/debugger stripped) + .gz/.br assets
-docker compose --profile build run --rm frontend-build
-
-# Backend: optimized release binary baked into a slim image; lux pinned; restart policies
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-```
-
-Build/compile optimizations in effect:
+The frontend and backend are compiled for production-grade efficiency:
 
 | Side | Optimizations |
 |------|---------------|
 | **Frontend** | `target: es2020`, esbuild minify, `drop: [console, debugger]`, no sourcemaps, vendor chunk split, **gzip + brotli precompression** |
-| **Backend** | `opt-level=3`, fat LTO, `codegen-units=1`, `panic=abort`, **`strip`**, `target-cpu=x86-64-v3` (→ `native` on dedicated bare metal), multi-stage → `debian:bookworm-slim` (no toolchain at runtime, non-root) |
+| **Backend** | `opt-level=3`, fat LTO, `codegen-units=1`, `panic=abort`, **`strip`**, `target-cpu=x86-64-v3` (→ `native` on dedicated bare metal); loopback-only bind, runs as `appsvc` |
 | **Nginx** | `gzip_static on` serves the precompressed assets in the tuned configs (zero runtime compression CPU); `brotli_static` available if built with `ngx_brotli` |
-| **DB** | lux pinned to a fixed tag for reproducibility |
 
 > `target-cpu=x86-64-v3` needs a CPU from ~2015+ (AVX2). On older hardware switch to
 > `x86-64-v2` in [app/backend/.cargo/config.toml](app/backend/.cargo/config.toml).
@@ -115,17 +127,20 @@ Build/compile optimizations in effect:
 ## Repository Layout
 
 ```
-app/                       React frontend + Rust backend (connects to lux over RESP)
-  backend/Dockerfile       multi-stage production backend image
+app/                       React frontend + Rust backend (loopback-only, RESP client)
   backend/.cargo/          codegen flags (target-cpu)
-nginx/                     baseline.conf, per-layer configs, static build output
+  backend/Dockerfile       backend image — used only by the dev/ Docker stack
+deploy/
+  systemd/                 lux.service, backend.service, nginx hardening drop-in
+  firewall/                nftables.conf (default-drop; only 22/80/443)
+nginx/                     baseline.conf, per-layer configs (loopback upstream, /var/www/1b-shop)
 kernel/                    sysctl.d snippets per layer
 benchmarks/                wrk Lua scripts, k6 scenarios
-scripts/                   apply-layer-N.sh, measure.sh, reset-baseline.sh, orchestration
-results/                   raw benchmark output per tier
+scripts/                   install-target.sh, apply-layer-N.sh, apply-all-layers.sh,
+                           snapshot.sh (target), load-test.sh (tester), generate-report.sh
+results/                   benchmark output per tier (<label>/snapshot + <label>/load)
 docs/                      written guide sections
-docker-compose.yml         dev stack (lux + backend-from-source + nginx)
-docker-compose.prod.yml    production override (built backend image, pinned lux)
+dev/                       Docker Compose — LOCAL DEV ONLY, not the benchmark target
 ```
 
 > **Note:** 1B concurrent is the theoretical ceiling on T3 hardware. Each tier documents

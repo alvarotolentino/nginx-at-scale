@@ -17,11 +17,11 @@ events {
 }
 http {
     access_log /var/log/nginx/access.log;   # logging on (a small but real cost)
-    upstream backend { server backend:8080; }  # the Rust API, one upstream, no keepalive pool
+    upstream backend { server 127.0.0.1:8080; } # the loopback Rust API, no keepalive pool
 
     server {
         listen 80;              # plain HTTP, default backlog, no reuseport
-        root /srv/static;       # React SPA build
+        root /var/www/1b-shop;  # React SPA build
         location /api/ {
             proxy_pass http://backend/api/;   # reverse proxy, no upstream keepalive
         }
@@ -36,23 +36,32 @@ Every directive here is the framework default. There is no `use epoll`, no
 `multi_accept`, no raised `worker_rlimit_nofile`, no socket-buffer tuning — that is the
 point.
 
-## Running the baseline
+## Running the baseline (two nodes)
 
 ```bash
-# 1. Install the baseline config and reload Nginx
-sudo cp nginx/baseline.conf /etc/nginx/nginx.conf
-sudo nginx -t && sudo nginx -s reload
+# --- TARGET: install the baseline config + snapshot the box state ---
+sudo scripts/apply-baseline.sh
+#   (cp nginx/baseline.conf → /etc/nginx/nginx.conf, reload, then snapshot.sh --label baseline)
 
-# 2. Capture the baseline measurement
-sudo scripts/measure.sh --label baseline --tier 1
+# --- TESTER: generate load against the target for the same label ---
+scripts/load-test.sh --target https://<target-ip> --label baseline --tier 1
 
-# 3. Read the output
-cat results/tier-1/baseline-*/wrk-static.txt
+# --- read the output ---
+cat results/tier-1/baseline/load/wrk-static.txt        # on the tester
+cat results/tier-1/baseline/snapshot/socket-stats.txt  # on the target
 ```
 
-`measure.sh` writes `wrk-static.txt`, `wrk-api.txt`, `socket-stats.txt`,
-`kernel-params.txt`, `nginx-params.txt`, and `memory.txt` into a timestamped
-directory, and prints a one-line summary (RPS + p99) to your terminal.
+The work is split across the two nodes:
+
+- **`snapshot.sh`** (target) records *what state the box is in* — `socket-stats.txt`,
+  `kernel-params.txt`, `nginx-params.txt`, `cpu-topology.txt`, `allocator.txt`,
+  `memory.txt`, `services.txt` — into `results/tier-N/<label>/snapshot/`.
+- **`load-test.sh`** (tester) records *how it performed* — `wrk-static.txt`, `wrk-api.txt`
+  (and optional k6) — into `results/tier-N/<label>/load/`, and prints a one-line RPS + p99
+  summary. `wrk` accepts the self-signed lab cert transparently.
+
+Copy the tester's `load/` dir back into the target's results tree, then
+`scripts/generate-report.sh --tier 1` merges both halves by label.
 
 ## What to record
 

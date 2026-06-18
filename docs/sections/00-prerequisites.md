@@ -22,22 +22,56 @@
 > Debian-specific. They run unmodified on Ubuntu 24.04 LTS after the hardening step
 > in [the SPEC](../../SPEC.md) (purge snapd/cloud-init, disable auto-reboot).
 
-## Software prerequisites
+## Two nodes
+
+This is a **two-node** setup. Keep them separate — co-locating the load generator on the
+target steals CPU/IRQs from the thing you're measuring and pollutes the numbers.
+
+| Node | Role | What runs there |
+|------|------|-----------------|
+| **Target** | The tuned bare-metal box under test | nginx + backend + lux (systemd), the sysctl/nginx tuning layers |
+| **Tester** | A separate, isolated VM/instance | `wrk` / `wrk2` / `k6` load generators only |
+
+## Target node — provisioning
+
+The target is provisioned by one script. On a fresh **Debian 12** box:
 
 ```bash
-# Core tooling
-sudo apt-get update
-sudo apt-get install -y git make curl wget build-essential
+git clone https://github.com/alvarotolentino/nginx-at-scale.git && cd highthroughput
+sudo scripts/install-target.sh
+```
+
+`install-target.sh` installs nginx + the Rust/Node toolchains, creates the `appsvc` /
+`luxsvc` service users, builds the frontend → `/var/www/1b-shop` and the backend →
+`/usr/local/bin/1b-backend`, builds lux from source, installs the systemd units (with
+sandboxing), generates the self-signed TLS cert, applies the nftables firewall (only
+22/80/443 inbound), brings up the baseline nginx config, and runs the target smoke test.
+
+Verify afterwards:
+
+```bash
+systemctl is-active lux backend nginx     # all "active"
+scripts/smoke-test.sh                      # loopback checks pass
+nft list ruleset                           # only 22/80/443 exposed
+```
+
+> The backend (`:8080`) and lux (`:6379`) bind to `127.0.0.1` and are never in a firewall
+> rule — they're reachable only through nginx, never from the tester or the network.
+
+## Tester node — load tooling
+
+The tester needs only the load generators (no nginx, no Rust, no app):
+
+```bash
+sudo apt-get update && sudo apt-get install -y git build-essential curl
 
 # wrk (build from source)
 git clone https://github.com/wg/wrk.git /tmp/wrk
-make -C /tmp/wrk -j"$(nproc)"
-sudo cp /tmp/wrk/wrk /usr/local/bin/
+make -C /tmp/wrk -j"$(nproc)" && sudo cp /tmp/wrk/wrk /usr/local/bin/
 
-# wrk2 (build from source — latency-accurate, constant-rate)
+# wrk2 (latency-accurate, constant-rate)
 git clone https://github.com/giltene/wrk2.git /tmp/wrk2
-make -C /tmp/wrk2 -j"$(nproc)"
-sudo cp /tmp/wrk2/wrk /usr/local/bin/wrk2
+make -C /tmp/wrk2 -j"$(nproc)" && sudo cp /tmp/wrk2/wrk /usr/local/bin/wrk2
 
 # k6 (Grafana apt repo)
 sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
@@ -45,72 +79,44 @@ sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.g
 echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
   | sudo tee /etc/apt/sources.list.d/k6.list
 sudo apt-get update && sudo apt-get install -y k6
-
-# Nginx (1.26+)
-sudo apt-get install -y nginx
-
-# Rust toolchain
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-source "$HOME/.cargo/env"
-
-# Node.js 20 (NodeSource apt repo)
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt-get install -y nodejs
 ```
 
-## Verify the toolchain
+Then clone the repo on the tester too (for `scripts/load-test.sh` and the k6 scenarios)
+and confirm reachability:
 
 ```bash
-nginx -v          # nginx version: 1.26.x or newer
-wrk --version     # wrk 4.x
-wrk2 --version    # (built above)
-k6 version        # k6 v0.5x
-rustc --version   # rustc 1.7x+
-node --version    # v20.x
+git clone https://github.com/alvarotolentino/nginx-at-scale.git && cd highthroughput
+scripts/smoke-test.sh --target https://<target-ip>   # remote checks pass
 ```
 
-## Clone and initial setup
+## Running a layer (the manual two-step)
 
 ```bash
-git clone <this-repo> && cd highthroughput
+# TARGET: apply + snapshot one layer (or the whole sweep with apply-all-layers.sh)
+sudo scripts/apply-layer-1.sh
 
-# Build the frontend → nginx/static
-( cd app/frontend && npm install && npm run build )
+# TESTER: generate load against the target for that same label
+scripts/load-test.sh --target https://<target-ip> --label layer-1 --tier 2
 
-# Start the lux DB (Redis-compatible) — via docker, or a local lux binary
-docker run -d -p 6379:6379 -e LUX_BIND_HOST=0.0.0.0 ghcr.io/lux-db/lux:latest
-
-# Build + run the backend (listens on :8080, connects to lux on :6379)
-( cd app/backend && REDIS_URL=redis://127.0.0.1:6379 cargo run --release -p server )
-
-# In another shell: apply the baseline and smoke-test
-sudo scripts/apply-baseline.sh
-scripts/smoke-test.sh
+# Copy the tester's load/ results back to the target, then build the report there:
+scp -r results/tier-2/layer-1/load target:<repo>/results/tier-2/layer-1/
+# on TARGET:
+scripts/generate-report.sh --tier 2
 ```
 
 ## What you'll build
 
 ```
-[wrk / k6 load generator]
-          │
-          ▼
-   ┌─────────────────────────────┐
-   │  Nginx  (port 80 / 443)     │
-   │   ├── /       → static files: React SPA  (nginx/static → /srv/static)
-   │   └── /api/   → reverse proxy ──────────────┐
-   └─────────────────────────────┘               │
-                                                  ▼
-                                     ┌───────────────────────┐
-                                     │ Rust backend (:8080)  │
-                                     │   Axum (RESP client)  │
-                                     └───────────┬───────────┘
-                                                 │ redis://lux:6379 (RESP)
-                                                 ▼
-                                     ┌───────────────────────┐
-                                     │ lux server (:6379)    │
-                                     │  Redis-compatible DB  │
-                                     │    └── ./data (snaps) │
-                                     └───────────────────────┘
+   TESTER node (isolated)                     TARGET node (bare metal, tuned)
+   ┌──────────────────────┐                   ┌────────────────────────────────────────┐
+   │ scripts/load-test.sh │                   │ nftables: only 22/80/443 inbound       │
+   │   wrk / wrk2 / k6     │── HTTPS :443 ────▶│ nginx (systemd, CAP_NET_BIND_SERVICE)  │
+   │   --target https://IP │                   │   ├── /     → /var/www/1b-shop (SPA)   │
+   └──────────────────────┘                   │   └── /api/ → 127.0.0.1:8080           │
+                                              │ backend (systemd, appsvc, loopback)    │
+                                              │   └── redis://127.0.0.1:6379           │
+                                              │ lux (systemd, luxsvc, loopback, 0700)  │
+                                              └────────────────────────────────────────┘
 ```
 
 Next: [Section 02 — Baseline Measurement](02-baseline.md).
