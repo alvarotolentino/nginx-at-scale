@@ -25,8 +25,9 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    // Connect to the lux server over RESP. REDIS_URL points at the lux service
-    // (docker-compose: redis://lux:6379; local: redis://127.0.0.1:6379).
+    // Connect to the lux server over RESP. REDIS_URL points at the lux service —
+    // on the bare-metal target lux is loopback-only (redis://127.0.0.1:6379); the dev
+    // container overrides it to redis://lux:6379.
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
     let client = redis::Client::open(redis_url.clone())
@@ -44,18 +45,28 @@ async fn main() -> Result<()> {
     // ConnectionManager is cheaply cloneable; share it as Axum state directly.
     let state: AppState = cm;
 
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/api/products", get(handlers::list_products))
         .route("/api/products/:id", get(handlers::get_product))
         .route("/api/orders", get(handlers::list_orders))
-        .route("/health", get(handlers::health))
-        // CORS open for local development only — Nginx terminates and proxies in prod.
-        .layer(CorsLayer::permissive())
+        .route("/health", get(handlers::health));
+
+    // Same-origin in production: Nginx terminates TLS and proxies /api/ from the same
+    // host, so no CORS is needed. Only enable permissive CORS for local dev/tester runs
+    // where the frontend is served from a different origin (Vite dev server, container).
+    if std::env::var("CORS_DEV").as_deref() == Ok("1") {
+        tracing::warn!("CORS_DEV=1: enabling permissive CORS (dev/tester only)");
+        app = app.layer(CorsLayer::permissive());
+    }
+
+    let app = app
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
-    let addr = "0.0.0.0:8080";
-    let listener = tokio::net::TcpListener::bind(addr)
+    // Bind loopback-only by default so the backend is never directly reachable from the
+    // network — all traffic must come through Nginx. Override via BIND_ADDR for dev.
+    let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+    let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .with_context(|| format!("binding {addr}"))?;
     tracing::info!("backend listening on http://{addr}");

@@ -35,6 +35,10 @@ COPY --from=builder /build/target/release/server /usr/local/bin/server
 
 USER appuser
 EXPOSE 8080
+# The binary defaults to BIND_ADDR=127.0.0.1:8080 (loopback) for the bare-metal
+# target. Inside a container that would be unreachable, so the dev compose sets
+# BIND_ADDR=0.0.0.0:8080. REDIS_URL points at the lux service on the compose network.
 ENV RUST_LOG=info \
+    BIND_ADDR=0.0.0.0:8080 \
     REDIS_URL=redis://lux:6379
 ENTRYPOINT ["/usr/local/bin/server"]
