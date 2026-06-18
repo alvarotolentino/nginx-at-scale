@@ -14,4 +14,4 @@ cp "$ROOT_DIR/nginx/sections/layer-03-worker-events.conf" /etc/nginx/nginx.conf
 nginx_reload
 log_ok "Active worker_connections: $(nginx -T 2>/dev/null | grep worker_connections | head -1 | xargs)"
 
-"$SCRIPT_DIR/measure.sh" --label layer-3
+"$SCRIPT_DIR/snapshot.sh" --label layer-3

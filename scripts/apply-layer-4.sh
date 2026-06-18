@@ -47,4 +47,4 @@ else
   log_warn "jemalloc not found in /proc/${NGINX_PID}/maps — check LD_PRELOAD"
 fi
 
-"$SCRIPT_DIR/measure.sh" --label layer-4
+"$SCRIPT_DIR/snapshot.sh" --label layer-4

@@ -39,4 +39,4 @@ nginx_reload
 log_ok "Workers pinned (worker_processes=${CPUS}, affinity auto). Topology:"
 numactl --hardware
 
-"$SCRIPT_DIR/measure.sh" --label layer-7
+"$SCRIPT_DIR/snapshot.sh" --label layer-7

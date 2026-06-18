@@ -40,5 +40,5 @@ systemctl daemon-reload
 nginx_reload
 log_ok "Layer 1 applied"
 
-# Capture the post-change numbers.
-"$SCRIPT_DIR/measure.sh" --label layer-1
+# Snapshot the post-change target state (load comes from the tester separately).
+"$SCRIPT_DIR/snapshot.sh" --label layer-1

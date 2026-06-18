@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 # Aggregate all runs in results/tier-N/ into a Markdown report with a delta column.
+# Each run is a label dir holding two subdirs:
+#   <label>/snapshot/  — target system state (from scripts/snapshot.sh on the target)
+#   <label>/load/      — wrk/k6 output (from scripts/load-test.sh on the tester, scp'd back)
+# Run this on the target AFTER copying the tester's load/ dirs into the results tree.
 #
 # Usage: scripts/generate-report.sh --tier 1
 set -euo pipefail
@@ -48,29 +52,33 @@ pct_delta() {
   echo
   echo "_Generated $(date '+%Y-%m-%d %H:%M:%S')_"
   echo
-  echo "| Layer | Label | RPS (static) | RPS (API) | p99 Latency | Δ vs baseline |"
-  echo "|-------|-------|-------------|-----------|-------------|---------------|"
+  echo "| Layer | Label | RPS (static) | RPS (API) | p99 Latency | Δ vs baseline | Snapshot |"
+  echo "|-------|-------|-------------|-----------|-------------|---------------|----------|"
 } > "$REPORT"
 
-# Discover run directories, sorted by timestamp suffix (and thus chronological).
+# Discover run/label directories, sorted alphabetically (baseline first, then layer-N).
 BASE_RPS=""
 n=0
-# Sort so "baseline-*" and "layer-N-*" appear in run order.
 while IFS= read -r dir; do
   [ -d "$dir" ] || continue
   label="$(basename "$dir")"
-  static_rps="$(parse_rps "$dir/wrk-static.txt")"
-  api_rps="$(parse_rps "$dir/wrk-api.txt")"
-  p99="$(parse_p99 "$dir/wrk-static.txt")"
 
-  # The first run (alphabetically baseline, or first chronologically) is the base.
+  # Load metrics come from the tester (<label>/load/); system state from the target
+  # (<label>/snapshot/). Either may be absent if that half hasn't been collected yet.
+  load_dir="$dir/load"
+  static_rps="$(parse_rps "$load_dir/wrk-static.txt")"
+  api_rps="$(parse_rps "$load_dir/wrk-api.txt")"
+  p99="$(parse_p99 "$load_dir/wrk-static.txt")"
+  snap="—"; [ -d "$dir/snapshot" ] && snap="yes"
+
+  # The first run (alphabetically baseline) with a load result is the comparison base.
   if [ -z "$BASE_RPS" ] && [ -n "$static_rps" ]; then
     BASE_RPS="$static_rps"
   fi
   delta="$(pct_delta "$static_rps" "$BASE_RPS")"
 
-  printf "| %d | %s | %s | %s | %s | %s |\n" \
-    "$n" "$label" "${static_rps:-n/a}" "${api_rps:-n/a}" "${p99:-n/a}" "${delta:-—}" \
+  printf "| %d | %s | %s | %s | %s | %s | %s |\n" \
+    "$n" "$label" "${static_rps:-n/a}" "${api_rps:-n/a}" "${p99:-n/a}" "${delta:-—}" "$snap" \
     >> "$REPORT"
   n=$((n + 1))
 done < <(find "$TIER_DIR" -mindepth 1 -maxdepth 1 -type d | sort)

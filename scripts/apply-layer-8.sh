@@ -57,6 +57,6 @@ log_warn "Manual step required: bind your TRAFFIC NIC to vfio-pci (NOT your mgmt
 log_warn "  dpdk-devbind.py --bind=vfio-pci <PCI_ADDR>"
 log_warn "See docs/sections/layer-08-dpdk.md for the full walkthrough."
 
-# Measure Nginx on the kernel path now, as the before/after comparison baseline
+# Snapshot Nginx on the kernel path now, as the before/after comparison baseline
 # against the NIC ceiling a DPDK data plane could reach.
-"$SCRIPT_DIR/measure.sh" --label layer-8-pre-dpdk
+"$SCRIPT_DIR/snapshot.sh" --label layer-8-pre-dpdk

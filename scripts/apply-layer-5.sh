@@ -31,4 +31,4 @@ cp "$ROOT_DIR/nginx/sections/layer-05-tls.conf" /etc/nginx/nginx.conf
 nginx_reload
 log_ok "TLS active. Test: curl -k https://localhost/health"
 
-"$SCRIPT_DIR/measure.sh" --label layer-5 --url https://localhost
+"$SCRIPT_DIR/snapshot.sh" --label layer-5

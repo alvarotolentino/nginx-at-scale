@@ -27,4 +27,4 @@ sysctl --system >/dev/null
 nginx_reload
 log_ok "Layer 2 applied. Congestion control: $(sysctl -n net.ipv4.tcp_congestion_control)"
 
-"$SCRIPT_DIR/measure.sh" --label layer-2
+"$SCRIPT_DIR/snapshot.sh" --label layer-2

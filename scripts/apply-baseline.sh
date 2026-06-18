@@ -14,5 +14,6 @@ cp "$ROOT_DIR/nginx/baseline.conf" /etc/nginx/nginx.conf
 nginx_reload
 log_ok "Baseline config active"
 
-# Record the starting numbers everything else is compared against.
-"$SCRIPT_DIR/measure.sh" --label baseline
+# Snapshot the starting target state everything else is compared against.
+# Load is generated separately from the tester (scripts/load-test.sh --label baseline).
+"$SCRIPT_DIR/snapshot.sh" --label baseline
