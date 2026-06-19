@@ -15,17 +15,21 @@ Two nodes. The **target** is the tuned bare-metal box under test; the **tester**
 separate, isolated machine that generates load. They're kept apart on purpose — running
 the load generator on the target steals CPU/IRQs from the thing being measured.
 
-```
-   TESTER node (isolated)                     TARGET node (bare metal, tuned)
-   ┌──────────────────────┐                   ┌────────────────────────────────────────┐
-   │ scripts/load-test.sh │                   │ nftables: only 22/80/443 inbound       │
-   │   wrk / wrk2 / k6     │── HTTPS :443 ────▶│ nginx (systemd, CAP_NET_BIND_SERVICE)  │
-   │   --target https://IP │                   │   ├── /     → /var/www/1b-shop (SPA)   │
-   └──────────────────────┘                   │   └── /api/ → 127.0.0.1:8080           │
-                                              │ backend (systemd, appsvc, loopback)    │
-                                              │   └── redis://127.0.0.1:6379           │
-                                              │ lux (systemd, luxsvc, loopback, 0700)  │
-                                              └────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph tester["TESTER node (isolated)"]
+        lt["scripts/load-test.sh<br/>wrk / wrk2 / k6<br/>--target https://IP"]
+    end
+    subgraph target["TARGET node (bare metal, tuned)"]
+        fw["nftables<br/>only 22/80/443 inbound"]
+        nginx["nginx (systemd)<br/>CAP_NET_BIND_SERVICE<br/>/ → /var/www/1b-shop (SPA)"]
+        backend["backend (systemd, appsvc)<br/>127.0.0.1:8080 (loopback)"]
+        lux["lux (systemd, luxsvc)<br/>127.0.0.1:6379 (loopback, 0700)"]
+    end
+    lt -->|"HTTPS :443"| fw
+    fw --> nginx
+    nginx -->|"/api/"| backend
+    backend -->|"redis RESP"| lux
 ```
 
 - **No Docker on the target.** App components run as **systemd** services so the kernel,
