@@ -2,9 +2,11 @@
 
 > **Scope note.** Nginx mainline does **not** use io_uring for its networking event
 > loop — epoll remains the networking path as of Nginx 1.26. This layer targets
-> **file I/O only**: serving large static assets more efficiently. There is no
-> separate apply script; the directives are folded into the Layer 5 config on
-> systems where libaio is available (see [layer-06-aio.conf](../../nginx/sections/layer-06-aio.conf)).
+> **file I/O only**: serving large static assets more efficiently. It is applied by
+> [apply-layer-6.sh](../../scripts/apply-layer-6.sh), which installs
+> [layer-06-aio.conf](../../nginx/sections/layer-06-aio.conf) — the Layer 5 TLS config
+> plus `aio`/`directio` on the static location — and requires libaio on the host
+> (`apply-layer-5.sh` already installs `libaio-dev`; the Layer 6 script guards for it too).
 
 ## What `aio on` does
 

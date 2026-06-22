@@ -66,8 +66,8 @@ if [ "$FROM" -le 0 ]; then
   prompt_load "baseline"
 fi
 
-# 4. Walk the layers. Layer 6 has no apply script (folded into Layer 5 config), so
-#    skip it gracefully if the file is absent.
+# 4. Walk the layers. Every layer 1..8 has an apply-layer-N.sh; if one is absent
+#    (e.g. a custom build dropped it), skip it gracefully instead of aborting.
 start=$FROM
 [ "$start" -lt 1 ] && start=1
 for N in $(seq "$start" "$TO"); do

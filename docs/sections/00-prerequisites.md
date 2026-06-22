@@ -19,8 +19,8 @@
    you need the other for management/SSH.
 
 > All sysctl and Nginx directives in this guide are pure kernel/Nginx — nothing is
-> Debian-specific. They run unmodified on Ubuntu 24.04 LTS after the hardening step
-> in [the SPEC](../../SPEC.md) (purge snapd/cloud-init, disable auto-reboot).
+> Debian-specific. They run unmodified on Ubuntu 24.04 LTS after a small hardening step
+> (purge snapd/cloud-init, disable unattended auto-reboot).
 
 ## Two nodes
 
