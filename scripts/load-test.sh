@@ -84,11 +84,16 @@ wrk -t"${THREADS}" -c"${CONNS}" -d"${DURATION}s" --latency "${TARGET}/" \
 # directly — no backend involved (wrk does not run JS, so the SPA's API calls
 # never fire). Discover the real asset hashes and a real product id from the
 # target so the paths match the current Vite build and DB seed.
+#
+# Routes are weighted 8x over assets (path@N syntax) so the mix measures nginx
+# connection concurrency rather than being dominated by the ~140 KB vendor bundle
+# (an even round-robin would make 1-in-6 requests a big transfer and turn this
+# into a bandwidth test instead of a concurrency test).
 ASSETS="$(curl -fsSL -k "${TARGET}/" 2>/dev/null \
-  | grep -oE '/assets/[^"]+\.(js|css)' | sort -u | paste -sd, -)"
+  | grep -oE '/assets/[^"]+\.(js|css)' | sort -u | sed 's/$/@1/' | paste -sd, -)"
 SAMPLE_ID="$(curl -fsSL -k "${TARGET}/api/products" 2>/dev/null \
   | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['id'] if d else '')" 2>/dev/null)"
-UI_PATHS="/,/product/${SAMPLE_ID:-prod-001},/cart${ASSETS:+,$ASSETS}"
+UI_PATHS="/@8,/product/${SAMPLE_ID:-prod-001}@8,/cart@8${ASSETS:+,$ASSETS}"
 UI_PATHS="$UI_PATHS" wrk -t"${THREADS}" -c"${CONNS}" -d"${DURATION}s" --latency \
   -s "$ROOT_DIR/benchmarks/wrk/browse-ui.lua" "${TARGET}" \
   > "$OUT_DIR/wrk-ui.txt" 2>&1 || true
