@@ -37,7 +37,7 @@ target steals CPU/IRQs from the thing you're measuring and pollutes the numbers.
 The target is provisioned by one script. On a fresh **Debian 12** box:
 
 ```bash
-git clone https://github.com/alvarotolentino/nginx-at-scale.git && cd highthroughput
+git clone https://github.com/alvarotolentino/nginx-at-scale.git && cd nginx-at-scale
 sudo scripts/install-target.sh
 ```
 

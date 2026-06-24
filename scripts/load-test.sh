@@ -21,6 +21,7 @@ DURATION="30"
 THREADS="12"
 CONNS="400"
 RUN_K6="0"
+RUN_API="0"   # API path stresses the backend, not nginx; off by default
 
 # ---- arg parsing ------------------------------------------------------------
 while [ $# -gt 0 ]; do
@@ -32,6 +33,7 @@ while [ $# -gt 0 ]; do
     --threads)  THREADS="$2"; shift 2 ;;
     --conns)    CONNS="$2"; shift 2 ;;
     --k6)       RUN_K6="1"; shift 1 ;;
+    --api)      RUN_API="1"; shift 1 ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
@@ -75,11 +77,36 @@ echo "Loading ${TARGET} as '${LABEL}' (tier ${TIER}) for ${DURATION}s (${THREADS
 wrk -t"${THREADS}" -c"${CONNS}" -d"${DURATION}s" --latency "${TARGET}/" \
   > "$OUT_DIR/wrk-static.txt" 2>&1 || true
 
-# ---- 2. wrk: dynamic API ----------------------------------------------------
-wrk -t"${THREADS}" -c"${CONNS}" -d"${DURATION}s" --latency "${TARGET}/api/products" \
-  > "$OUT_DIR/wrk-api.txt" 2>&1 || true
+# ---- 2. wrk: UI browse (multiple real static paths) -------------------------
+# The headline metric for the "1B concurrent in nginx" goal: a browser-like mix
+# of the SPA routes (/, /product/<id>, /cart — all resolve to index.html via
+# try_files) plus the hashed JS/CSS bundles. Everything here is served by nginx
+# directly — no backend involved (wrk does not run JS, so the SPA's API calls
+# never fire). Discover the real asset hashes and a real product id from the
+# target so the paths match the current Vite build and DB seed.
+ASSETS="$(curl -fsSL -k "${TARGET}/" 2>/dev/null \
+  | grep -oE '/assets/[^"]+\.(js|css)' | sort -u | paste -sd, -)"
+SAMPLE_ID="$(curl -fsSL -k "${TARGET}/api/products" 2>/dev/null \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['id'] if d else '')" 2>/dev/null)"
+UI_PATHS="/,/product/${SAMPLE_ID:-prod-001},/cart${ASSETS:+,$ASSETS}"
+UI_PATHS="$UI_PATHS" wrk -t"${THREADS}" -c"${CONNS}" -d"${DURATION}s" --latency \
+  -s "$ROOT_DIR/benchmarks/wrk/browse-ui.lua" "${TARGET}" \
+  > "$OUT_DIR/wrk-ui.txt" 2>&1 || true
 
-# ---- 3. optional k6 concurrency ramp ---------------------------------------
+# ---- 3. wrk: dynamic API (opt-in; measures the backend, not nginx) ----------
+# Off by default: the API path goes nginx -> Axum -> lux, so it benchmarks the
+# backend and pollutes the nginx layer-by-layer deltas. Enable with --api only
+# when you specifically want a backend datapoint.
+if [ "$RUN_API" = "1" ]; then
+  wrk -t"${THREADS}" -c"${CONNS}" -d"${DURATION}s" --latency "${TARGET}/api/products" \
+    > "$OUT_DIR/wrk-api.txt" 2>&1 || true
+fi
+
+# ---- 4. optional k6 user-journey (browser-accurate: static + API chain) -----
+# The only scenario that exercises the SPA's API calls the way a real browser
+# does: GET / -> GET /api/products -> GET /api/products/<real id from the list>.
+# wrk can't do this (it doesn't run JS), so k6 is how you measure the full
+# product-list + product-detail journey, including the backend. Enable with --k6.
 if [ "$RUN_K6" = "1" ]; then
   if command -v k6 >/dev/null 2>&1; then
     # --insecure-skip-tls-verify so k6 accepts the self-signed lab cert.
@@ -94,14 +121,24 @@ fi
 # ---- summary ----------------------------------------------------------------
 RPS="$(grep -E 'Requests/sec' "$OUT_DIR/wrk-static.txt" | awk '{print $2}' | head -1)"
 P99="$(grep -E '^\s*99%' "$OUT_DIR/wrk-static.txt" | awk '{print $2}' | head -1)"
+UI_RPS="$(grep -E 'Requests/sec' "$OUT_DIR/wrk-ui.txt" 2>/dev/null | awk '{print $2}' | head -1)"
+UI_P99="$(grep -E '^\s*99%' "$OUT_DIR/wrk-ui.txt" 2>/dev/null | awk '{print $2}' | head -1)"
+# k6 journey: pull the http_req_duration p95 line if a k6 run happened.
+K6_P95="$(grep -E 'http_req_duration' "$OUT_DIR/k6-browse.txt" 2>/dev/null \
+  | grep -oE 'p\(95\)=[0-9.]+m?s' | head -1)"
 
 echo
 echo "==================== LOAD SUMMARY ===================="
-printf "  %-14s %s\n" "Target:"       "$TARGET"
-printf "  %-14s %s\n" "Label:"        "$LABEL"
-printf "  %-14s %s\n" "RPS (static):" "${RPS:-n/a}"
-printf "  %-14s %s\n" "p99 latency:"  "${P99:-n/a}"
-printf "  %-14s %s\n" "Output:"       "$OUT_DIR"
+printf "  %-16s %s\n" "Target:"          "$TARGET"
+printf "  %-16s %s\n" "Label:"           "$LABEL"
+printf "  %-16s %s\n" "RPS (static /):"  "${RPS:-n/a}"
+printf "  %-16s %s\n" "p99 (static /):"  "${P99:-n/a}"
+printf "  %-16s %s\n" "RPS (UI mix):"    "${UI_RPS:-n/a}"
+printf "  %-16s %s\n" "p99 (UI mix):"    "${UI_P99:-n/a}"
+if [ "$RUN_K6" = "1" ]; then
+  printf "  %-16s %s\n" "k6 journey p95:" "${K6_P95:-n/a (see k6-browse.txt)}"
+fi
+printf "  %-16s %s\n" "Output:"          "$OUT_DIR"
 echo
 echo "  Copy results back to the target, then build the report there:"
 echo "    scp -r ${OUT_DIR} target:<repo>/results/tier-${TIER}/${LABEL}/"

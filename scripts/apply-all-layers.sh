@@ -43,6 +43,8 @@ prompt_load() {
   echo
   echo "  >>> From the TESTER node, generate load for '${label}' now:"
   echo "        scripts/load-test.sh --target https://<target-ip> --label ${label} --tier ${TIER}"
+  echo "      Add --k6 to also capture the browser-accurate API journey"
+  echo "      (GET / -> /api/products -> /api/products/<id>); add --api for a raw backend datapoint."
   if [ "$PAUSE" = "1" ]; then
     read -rp "  Press ENTER once the tester load run for '${label}' has finished... " _
   fi
