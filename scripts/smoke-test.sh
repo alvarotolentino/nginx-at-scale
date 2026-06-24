@@ -43,25 +43,38 @@ json_nonempty_array() {
 # TESTER mode — remote reachability only (no root, no local services).
 # =============================================================================
 if [ -n "$TARGET" ]; then
-  echo "Smoke-testing target ${TARGET} from the tester..."
+  # At baseline nginx only listens on :80 (no TLS until Layer 5). If the caller
+  # passed https:// but the connection is refused, silently fall back to http://
+  # so the smoke test works at every layer without changing the invocation.
+  BASE_URL="$TARGET"
+  if ! curl -fsSk --max-time 3 "${TARGET}/" >/dev/null 2>&1; then
+    HTTP_FALLBACK="${TARGET/https:\/\//http://}"
+    if curl -fsSL --max-time 3 "${HTTP_FALLBACK}/" >/dev/null 2>&1; then
+      echo "Note: ${TARGET} unreachable, falling back to ${HTTP_FALLBACK} (TLS not yet active)"
+      BASE_URL="$HTTP_FALLBACK"
+    fi
+  fi
+
+  echo "Smoke-testing target ${BASE_URL} from the tester..."
 
   # 1. Static index reachable over the network (-k for the self-signed lab cert,
   #    -L to follow the :80 -> :443 redirect once TLS layers are applied).
-  if curl -fsSL -k "${TARGET}/" 2>/dev/null | grep -qi "<html"; then
+  if curl -fsSL -k "${BASE_URL}/" 2>/dev/null | grep -qi "<html"; then
     check "remote static index" 0 ""
   else
-    check "remote static index" 1 "GET ${TARGET}/ did not contain <html"
+    check "remote static index" 1 "GET ${BASE_URL}/ did not contain <html"
   fi
 
   # 2. API reachable and non-empty.
-  if curl -fsSL -k "${TARGET}/api/products" 2>/dev/null | json_nonempty_array; then
+  if curl -fsSL -k "${BASE_URL}/api/products" 2>/dev/null | json_nonempty_array; then
     check "remote api products" 0 ""
   else
-    check "remote api products" 1 "GET ${TARGET}/api/products not a non-empty JSON array"
+    check "remote api products" 1 "GET ${BASE_URL}/api/products not a non-empty JSON array"
   fi
 
   # 3. Backend port must NOT be exposed (it binds loopback; firewall drops it).
-  if curl -sf --connect-timeout 3 "${TARGET%:*}:8080/health" >/dev/null 2>&1; then
+  TARGET_HOST="$(echo "$BASE_URL" | sed 's|https\?://||; s|/.*||; s|:.*||')"
+  if curl -sf --connect-timeout 3 "http://${TARGET_HOST}:8080/health" >/dev/null 2>&1; then
     check "backend port closed" 1 "port 8080 answered remotely — it must be loopback-only!"
   else
     check "backend port closed" 0 ""

@@ -32,7 +32,7 @@ TMP_CONF="$(mktemp)"
 sed "s/^worker_processes auto;.*/worker_processes ${CPUS};/" \
   "$ROOT_DIR/nginx/sections/layer-07-numa.conf" > "$TMP_CONF"
 
-cp "$TMP_CONF" /etc/nginx/nginx.conf
+nginx_install_conf "$TMP_CONF"
 rm -f "$TMP_CONF"
 
 nginx_reload

@@ -19,6 +19,9 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=_lib.sh
 source "$SCRIPT_DIR/_lib.sh"
 
+# Ensure all scripts are executable (git does not always preserve the +x bit).
+chmod +x "$SCRIPT_DIR"/*.sh
+
 require_root
 
 WEBROOT="/var/www/1b-shop"
@@ -82,7 +85,7 @@ log_ok "Backend installed to ${BACKEND_BIN}"
 # ---- 6. build + install lux -------------------------------------------------
 if [ ! -x "$LUX_BIN" ]; then
   log_step "Building lux from source (github.com/lux-db/lux)"
-  cargo install --git https://github.com/lux-db/lux --root /usr/local \
+  cargo install --git https://github.com/lux-db/lux lux --root /usr/local \
     || log_warn "cargo install lux failed — install the lux binary to ${LUX_BIN} manually"
 fi
 install -d -o luxsvc -g luxsvc -m 0700 "$LUX_DATA"
@@ -109,8 +112,12 @@ chmod 600 /etc/nginx/certs/nginx.key
 log_ok "Cert installed to /etc/nginx/certs"
 
 # ---- 9. baseline nginx config + restart under hardening ---------------------
+# Ensure dirs referenced in the hardening drop-in ReadWritePaths exist.
+# On Debian+nginx.org these are created by the package; on Ubuntu they may not be.
+mkdir -p /var/cache/nginx /var/lib/nginx
+
 log_step "Installing baseline nginx config"
-cp "$ROOT_DIR/nginx/baseline.conf" /etc/nginx/nginx.conf
+nginx_install_conf "$ROOT_DIR/nginx/baseline.conf"
 nginx -t
 systemctl restart nginx     # restart (not reload) so the hardening drop-in takes effect
 systemctl enable nginx

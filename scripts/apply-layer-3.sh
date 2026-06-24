@@ -10,7 +10,7 @@ source "$SCRIPT_DIR/_lib.sh"
 require_root
 log_step "Layer 3: Nginx Worker & Event Model"
 
-cp "$ROOT_DIR/nginx/sections/layer-03-worker-events.conf" /etc/nginx/nginx.conf
+nginx_install_conf "$ROOT_DIR/nginx/sections/layer-03-worker-events.conf"
 nginx_reload
 log_ok "Active worker_connections: $(nginx -T 2>/dev/null | grep worker_connections | head -1 | xargs)"
 

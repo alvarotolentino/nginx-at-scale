@@ -32,7 +32,7 @@ if ! ldconfig -p | grep -q 'libaio\.so'; then
 fi
 
 # Install the AIO config (TLS + aio/directio on the static location).
-cp "$ROOT_DIR/nginx/sections/layer-06-aio.conf" /etc/nginx/nginx.conf
+nginx_install_conf "$ROOT_DIR/nginx/sections/layer-06-aio.conf"
 
 nginx_reload
 log_ok "Async file I/O active (aio on, directio 512k). Verify with:"

@@ -26,7 +26,7 @@ fi
 mkdir -p /etc/nginx/certs
 cp "$ROOT_DIR/certs/nginx.crt" "$ROOT_DIR/certs/nginx.key" /etc/nginx/certs/
 chmod 600 /etc/nginx/certs/nginx.key
-cp "$ROOT_DIR/nginx/sections/layer-05-tls.conf" /etc/nginx/nginx.conf
+nginx_install_conf "$ROOT_DIR/nginx/sections/layer-05-tls.conf"
 
 nginx_reload
 log_ok "TLS active. Test: curl -k https://localhost/health"

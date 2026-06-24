@@ -24,6 +24,21 @@ require_root() {
   fi
 }
 
+# nginx_install_conf SOURCE
+# Copies SOURCE to /etc/nginx/nginx.conf and fixes the `user` directive to
+# match the system nginx worker account (nginx on Debian/RHEL, www-data on Ubuntu).
+nginx_install_conf() {
+  local src="$1"
+  local nginx_user
+  if getent passwd nginx >/dev/null 2>&1; then
+    nginx_user="nginx"
+  else
+    nginx_user=$(getent passwd www-data 2>/dev/null | cut -d: -f1 || echo "www-data")
+  fi
+  cp "$src" /etc/nginx/nginx.conf
+  sed -i "s/^user [^;]*;/user ${nginx_user};/" /etc/nginx/nginx.conf
+}
+
 # Validate config, then hot-reload Nginx. Never reloads a broken config.
 nginx_reload() {
   if ! nginx -t; then

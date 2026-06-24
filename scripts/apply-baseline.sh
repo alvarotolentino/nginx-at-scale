@@ -10,7 +10,7 @@ source "$SCRIPT_DIR/_lib.sh"
 require_root
 log_step "Applying baseline Nginx config"
 
-cp "$ROOT_DIR/nginx/baseline.conf" /etc/nginx/nginx.conf
+nginx_install_conf "$ROOT_DIR/nginx/baseline.conf"
 nginx_reload
 log_ok "Baseline config active"
 
