@@ -1,4 +1,4 @@
-wrk#!/usr/bin/env bash
+#!/usr/bin/env bash
 # Generate load against the TARGET node from the (separate, isolated) TESTER node.
 # This runs ON THE TESTER — never on the target. No root required.
 #
@@ -11,6 +11,19 @@ wrk#!/usr/bin/env bash
 #
 # Usage:
 #   scripts/load-test.sh --target https://10.0.0.5 --label layer-3 --tier 2 --duration 30
+#
+# Connection profiles (--profile), which control how load hits SO_REUSEPORT (active
+# from layer 3 on). reuseport pins each connection to one worker for its lifetime via
+# a 4-tuple hash, so a small set of long-lived keepalive connections lands unevenly and
+# leaves cores idle. The profiles below spread load across all workers/cores:
+#   standard  400 keepalive conns. Few, long-lived — under-utilises cores with reuseport.
+#   highconn  4000 keepalive conns. Many distinct source ports => the reuseport hash
+#             spreads across all workers while keeping keepalive (measures nginx
+#             efficiency, not connect overhead). Primary fix for the 50%-CPU plateau.
+#   churn     1000 conns with "Connection: close" => a fresh TCP connection (new
+#             4-tuple) per request, so reuseport re-hashes every request. Maximal
+#             spread; also exercises the accept path / connection setup cost.
+# --conns always overrides the profile's connection count.
 set -euo pipefail
 
 # ---- defaults ---------------------------------------------------------------
@@ -19,7 +32,9 @@ LABEL="run"
 TIER="1"
 DURATION="30"
 THREADS="12"
+PROFILE="standard"
 CONNS="400"
+CONNS_SET="0"     # track whether the user overrode --conns explicitly
 RUN_K6="0"
 RUN_API="0"   # API path stresses the backend, not nginx; off by default
 
@@ -31,12 +46,25 @@ while [ $# -gt 0 ]; do
     --tier)     TIER="$2"; shift 2 ;;
     --duration) DURATION="$2"; shift 2 ;;
     --threads)  THREADS="$2"; shift 2 ;;
-    --conns)    CONNS="$2"; shift 2 ;;
+    --conns)    CONNS="$2"; CONNS_SET="1"; shift 2 ;;
+    --profile)  PROFILE="$2"; shift 2 ;;
     --k6)       RUN_K6="1"; shift 1 ;;
     --api)      RUN_API="1"; shift 1 ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
+
+# ---- resolve connection profile ---------------------------------------------
+# Each profile sets a default connection count (unless --conns was given) and,
+# for churn, a "Connection: close" header that wrk applies to every request on
+# both the static and UI stages (browse-ui.lua reuses wrk.headers).
+WRK_EXTRA=()
+case "$PROFILE" in
+  standard) ;;
+  highconn) [ "$CONNS_SET" = "0" ] && CONNS="4000" ;;
+  churn)    [ "$CONNS_SET" = "0" ] && CONNS="1000"; WRK_EXTRA=(-H "Connection: close") ;;
+  *) echo "ERROR: --profile must be standard|highconn|churn (got '$PROFILE')" >&2; exit 1 ;;
+esac
 
 if [ -z "$TARGET" ]; then
   echo "ERROR: --target is required (e.g. --target https://10.0.0.5)" >&2
@@ -56,7 +84,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUT_DIR="$ROOT_DIR/results/tier-${TIER}/${LABEL}/load"
 mkdir -p "$OUT_DIR"
 
-echo "Loading ${TARGET} as '${LABEL}' (tier ${TIER}) for ${DURATION}s (${THREADS}t/${CONNS}c)..."
+echo "Loading ${TARGET} as '${LABEL}' (tier ${TIER}) for ${DURATION}s (${THREADS}t/${CONNS}c, profile=${PROFILE})..."
 
 # Record what produced this run so the report is self-describing.
 {
@@ -66,6 +94,7 @@ echo "Loading ${TARGET} as '${LABEL}' (tier ${TIER}) for ${DURATION}s (${THREADS
   echo "duration: ${DURATION}s"
   echo "threads:  $THREADS"
   echo "conns:    $CONNS"
+  echo "profile:  $PROFILE"
   echo "date:     $(date '+%Y-%m-%d %H:%M:%S %z')"
   echo "tester:   $(hostname 2>/dev/null || echo unknown)"
 } > "$OUT_DIR/meta.txt"
@@ -74,7 +103,7 @@ echo "Loading ${TARGET} as '${LABEL}' (tier ${TIER}) for ${DURATION}s (${THREADS
 # lab certificate is accepted transparently — no extra flag needed.
 
 # ---- 1. wrk: static root ----------------------------------------------------
-wrk -t"${THREADS}" -c"${CONNS}" -d"${DURATION}s" --latency "${TARGET}/" \
+wrk -t"${THREADS}" -c"${CONNS}" -d"${DURATION}s" --latency "${WRK_EXTRA[@]}" "${TARGET}/" \
   > "$OUT_DIR/wrk-static.txt" 2>&1 || true
 
 # ---- 2. wrk: UI browse (multiple real static paths) -------------------------
@@ -94,7 +123,7 @@ ASSETS="$(curl -fsSL -k "${TARGET}/" 2>/dev/null \
 SAMPLE_ID="$(curl -fsSL -k "${TARGET}/api/products" 2>/dev/null \
   | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['id'] if d else '')" 2>/dev/null)"
 UI_PATHS="/@8,/product/${SAMPLE_ID:-prod-001}@8,/cart@8${ASSETS:+,$ASSETS}"
-UI_PATHS="$UI_PATHS" wrk -t"${THREADS}" -c"${CONNS}" -d"${DURATION}s" --latency \
+UI_PATHS="$UI_PATHS" wrk -t"${THREADS}" -c"${CONNS}" -d"${DURATION}s" --latency "${WRK_EXTRA[@]}" \
   -s "$ROOT_DIR/benchmarks/wrk/browse-ui.lua" "${TARGET}" \
   > "$OUT_DIR/wrk-ui.txt" 2>&1 || true
 
@@ -103,7 +132,7 @@ UI_PATHS="$UI_PATHS" wrk -t"${THREADS}" -c"${CONNS}" -d"${DURATION}s" --latency 
 # backend and pollutes the nginx layer-by-layer deltas. Enable with --api only
 # when you specifically want a backend datapoint.
 if [ "$RUN_API" = "1" ]; then
-  wrk -t"${THREADS}" -c"${CONNS}" -d"${DURATION}s" --latency "${TARGET}/api/products" \
+  wrk -t"${THREADS}" -c"${CONNS}" -d"${DURATION}s" --latency "${WRK_EXTRA[@]}" "${TARGET}/api/products" \
     > "$OUT_DIR/wrk-api.txt" 2>&1 || true
 fi
 
