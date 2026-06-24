@@ -5,14 +5,15 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 
-const BASE = __ENV.BASE_URL || 'http://localhost';
+const BASE    = __ENV.BASE_URL    || 'http://localhost';
+const MAX_VUS = parseInt(__ENV.K6_MAX_VUS || '5000', 10);
 
 export const options = {
   stages: [
-    { duration: '2m', target: 1000 }, // ramp to 1k
-    { duration: '3m', target: 5000 }, // ramp to 5k
-    { duration: '10m', target: 5000 }, // hold
-    { duration: '2m', target: 0 }, // ramp down
+    { duration: '2m',  target: Math.min(1000, MAX_VUS) },
+    { duration: '3m',  target: MAX_VUS },
+    { duration: '10m', target: MAX_VUS },
+    { duration: '2m',  target: 0 },
   ],
   thresholds: {
     http_req_duration: ['p(95)<200'], // p95 latency under 200ms

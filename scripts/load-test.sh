@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+wrk#!/usr/bin/env bash
 # Generate load against the TARGET node from the (separate, isolated) TESTER node.
 # This runs ON THE TESTER — never on the target. No root required.
 #
