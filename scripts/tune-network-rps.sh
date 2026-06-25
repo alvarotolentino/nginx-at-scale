@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# Network RX/TX packet steering — spread NIC softirq processing across all cores.
+#
+# Why: a single-RX-queue NIC (e.g. Realtek r8169) funnels every received packet's
+# softirq onto the one core that handles the NIC IRQ. Under high connection load
+# that core saturates at ~100% %soft while the rest idle — the real ceiling once
+# nginx worker load is already balanced (see results/.../target-cpu.txt, CPU 9).
+#
+# What: enables RSS if the NIC supports multiple hardware queues; otherwise enables
+# RPS (Receive Packet Steering, the software equivalent) so the kernel fans RX
+# softirq across all CPUs, plus RFS (flow-aware steering) and XPS (TX side).
+#
+# Idempotent and persistent: live values are applied now and re-applied on boot via
+# a systemd oneshot unit (sysfs masks reset across reboots; sysctls persist in the
+# cumulative perf file).
+#
+# Usage:
+#   sudo scripts/tune-network-rps.sh                 # auto-detect default iface
+#   sudo scripts/tune-network-rps.sh --iface enp2s0
+#   sudo scripts/tune-network-rps.sh --no-persist    # apply live only (used by the boot unit)
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=_lib.sh
+source "$SCRIPT_DIR/_lib.sh"
+
+IFACE=""
+PERSIST=1
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --iface)      IFACE="$2"; shift 2 ;;
+    --no-persist) PERSIST=0; shift 1 ;;
+    *) echo "Unknown arg: $1" >&2; exit 1 ;;
+  esac
+done
+
+require_root
+log_step "Network packet steering (RSS/RPS/RFS/XPS)"
+
+# ---- resolve interface ------------------------------------------------------
+if [ -z "$IFACE" ]; then
+  IFACE="$(ip -o -4 route show to default 2>/dev/null | awk '{print $5; exit}')"
+fi
+if [ -z "$IFACE" ] || [ ! -d "/sys/class/net/$IFACE" ]; then
+  echo "ERROR: could not resolve a network interface (got '${IFACE:-empty}'). Pass --iface." >&2
+  exit 1
+fi
+log_ok "Interface: $IFACE ($(ethtool -i "$IFACE" 2>/dev/null | awk -F': ' '/^driver/{print $2}'))"
+
+CPUS="$(getconf _NPROCESSORS_ONLN)"
+
+# ---- hex CPU bitmask for sysfs (comma-separated 32-bit groups, high word first) --
+cpu_mask() {
+  # Assign n on its own line first: under `set -u`, referencing n in an arithmetic
+  # expansion on the same `local` line fails (RHS expands before n is assigned).
+  local n="$1" out="" i
+  local full=$(( n / 32 )) rem=$(( n % 32 ))
+  if [ "$rem" -gt 0 ]; then out="$(printf '%x' $(( (1 << rem) - 1 )))"; fi
+  for (( i = 0; i < full; i++ )); do
+    out="${out:+${out},}ffffffff"
+  done
+  echo "${out:-0}"
+}
+MASK="$(cpu_mask "$CPUS")"
+
+# ---- 1. RSS: try to raise hardware RX queues (no-op on single-queue NICs) ----
+RXQ="$(ls -d /sys/class/net/"$IFACE"/queues/rx-* 2>/dev/null | wc -l)"
+if ethtool -l "$IFACE" >/dev/null 2>&1; then
+  MAXQ="$(ethtool -l "$IFACE" 2>/dev/null | awk '/^Combined:/{print $2; exit}')"
+  if [ -n "${MAXQ:-}" ] && [ "$MAXQ" -gt 1 ] 2>/dev/null; then
+    ethtool -L "$IFACE" combined "$MAXQ" 2>/dev/null \
+      && log_ok "RSS: set $IFACE to $MAXQ hardware queues" \
+      || log_warn "RSS: ethtool -L failed; relying on RPS"
+    RXQ="$(ls -d /sys/class/net/"$IFACE"/queues/rx-* 2>/dev/null | wc -l)"
+  fi
+else
+  log_warn "RSS unavailable (driver has no multiqueue) — using RPS to compensate"
+fi
+
+# ---- 2. RPS: spread RX softirq across all CPUs ------------------------------
+for q in /sys/class/net/"$IFACE"/queues/rx-*; do
+  echo "$MASK" > "$q/rps_cpus"
+done
+log_ok "RPS: rps_cpus=$MASK on $RXQ RX queue(s) — RX softirq now spreads over $CPUS cores"
+
+# ---- 3. RFS: keep each flow on the core servicing its socket (cache locality) --
+# Global table sized to a power of two; per-queue budget is the table / #queues.
+RFS_TOTAL=32768
+sysctl_set net.core.rps_sock_flow_entries "$RFS_TOTAL"
+PERQ=$(( RFS_TOTAL / (RXQ > 0 ? RXQ : 1) ))
+for q in /sys/class/net/"$IFACE"/queues/rx-*; do
+  echo "$PERQ" > "$q/rps_flow_cnt"
+done
+log_ok "RFS: rps_sock_flow_entries=$RFS_TOTAL, rps_flow_cnt=$PERQ/queue"
+
+# ---- 4. XPS: spread TX completion softirq across CPUs -----------------------
+# Best-effort: some drivers (e.g. r8169) expose xps_cpus but reject writes. XPS is
+# TX-side only and not the bottleneck here, so a failed write is logged, not fatal.
+TXQ=0
+for q in /sys/class/net/"$IFACE"/queues/tx-*; do
+  [ -e "$q/xps_cpus" ] || continue
+  if echo "$MASK" > "$q/xps_cpus" 2>/dev/null; then TXQ=$(( TXQ + 1 )); fi
+done
+if [ "$TXQ" -gt 0 ]; then
+  log_ok "XPS: xps_cpus=$MASK on $TXQ TX queue(s)"
+else
+  log_warn "XPS: driver rejected xps_cpus writes (TX steering unsupported) — skipping (harmless)"
+fi
+
+# ---- 5. persist across reboots ----------------------------------------------
+# sysfs masks (rps_cpus/xps_cpus/rps_flow_cnt) are volatile; re-apply on boot.
+if [ "$PERSIST" -eq 1 ]; then
+  UNIT=/etc/systemd/system/nginx-net-rps.service
+  cat > "$UNIT" <<EOF
+[Unit]
+Description=Re-apply NIC RPS/RFS/XPS packet steering for high-concurrency nginx
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${SCRIPT_DIR}/tune-network-rps.sh --iface ${IFACE} --no-persist
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable nginx-net-rps.service >/dev/null 2>&1 || true
+  log_ok "Persistence: installed + enabled nginx-net-rps.service (re-applies on boot)"
+fi
+
+log_ok "Packet steering applied. Re-run the load test and check %soft is now spread across cores."

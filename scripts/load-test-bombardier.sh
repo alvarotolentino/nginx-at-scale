@@ -19,7 +19,9 @@ TARGET=""
 LABEL="run"
 TIER="1"
 DURATION="30"
+PROFILE="standard"
 CONNS="400"
+CONNS_SET="0"     # track whether the user overrode --conns explicitly
 RUN_API="0"
 RUN_K6="0"
 
@@ -30,7 +32,8 @@ while [ $# -gt 0 ]; do
     --label)    LABEL="$2";    shift 2 ;;
     --tier)     TIER="$2";     shift 2 ;;
     --duration) DURATION="$2"; shift 2 ;;
-    --conns)    CONNS="$2";    shift 2 ;;
+    --conns)    CONNS="$2"; CONNS_SET="1"; shift 2 ;;
+    --profile)  PROFILE="$2";  shift 2 ;;
     --api)      RUN_API="1";   shift 1 ;;
     --k6)       RUN_K6="1";    shift 1 ;;
     --threads)  shift 2 ;;     # accepted but ignored — bombardier is goroutine-based
@@ -43,6 +46,25 @@ if [ -z "$TARGET" ]; then
   echo "Usage: scripts/load-test-bombardier.sh --target http://<ip> --label <label> --tier <n>" >&2
   exit 1
 fi
+
+# ---- resolve connection profile ---------------------------------------------
+# Controls how load hits SO_REUSEPORT (active from layer 3 on). reuseport pins each
+# connection to one worker for its lifetime via a 4-tuple hash, so a few long-lived
+# keepalive connections land unevenly and leave cores idle (~50% CPU plateau).
+#   standard  400 keepalive conns — few, long-lived; under-utilises cores.
+#   highconn  4000 keepalive conns — many source ports spread the hash across all
+#             workers while keeping keepalive. Primary fix for the CPU plateau.
+#   churn     1000 conns + "Connection: close" — fresh connection (new 4-tuple) per
+#             request, so reuseport re-hashes every request. Also stresses accept path.
+# --conns overrides the profile's connection count. The churn header applies to the
+# bombardier static/API stages; the k6 UI stage keeps keepalive.
+BOMB_EXTRA=()
+case "$PROFILE" in
+  standard) ;;
+  highconn) [ "$CONNS_SET" = "0" ] && CONNS="4000" ;;
+  churn)    [ "$CONNS_SET" = "0" ] && CONNS="1000"; BOMB_EXTRA=(-H "Connection: close") ;;
+  *) echo "ERROR: --profile must be standard|highconn|churn (got '$PROFILE')" >&2; exit 1 ;;
+esac
 
 if ! command -v bombardier >/dev/null 2>&1; then
   echo "ERROR: bombardier not found in PATH." >&2
@@ -63,7 +85,7 @@ native_path() {
 OUT_DIR="$ROOT_DIR/results/tier-${TIER}/${LABEL}/load"
 mkdir -p "$OUT_DIR"
 
-echo "Loading ${TARGET} as '${LABEL}' (tier ${TIER}) for ${DURATION}s (${CONNS}c)..."
+echo "Loading ${TARGET} as '${LABEL}' (tier ${TIER}) for ${DURATION}s (${CONNS}c, profile=${PROFILE})..."
 
 {
   echo "target:   $TARGET"
@@ -71,6 +93,7 @@ echo "Loading ${TARGET} as '${LABEL}' (tier ${TIER}) for ${DURATION}s (${CONNS}c
   echo "tier:     $TIER"
   echo "duration: ${DURATION}s"
   echo "conns:    $CONNS"
+  echo "profile:  $PROFILE"
   echo "tool:     bombardier + k6"
   echo "date:     $(date '+%Y-%m-%d %H:%M:%S %z')"
   echo "tester:   $(hostname 2>/dev/null || echo unknown)"
@@ -86,7 +109,7 @@ echo "Loading ${TARGET} as '${LABEL}' (tier ${TIER}) for ${DURATION}s (${CONNS}c
 # bombardier already outputs correctly.
 run_bombardier() {
   local url="$1" out="$2"
-  bombardier -c "$CONNS" -d "${DURATION}s" -l --insecure "$url" \
+  bombardier -c "$CONNS" -d "${DURATION}s" -l --insecure "${BOMB_EXTRA[@]}" "$url" \
     > "$out" 2>&1 || true
 
   local rps

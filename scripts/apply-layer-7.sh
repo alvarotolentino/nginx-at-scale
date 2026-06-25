@@ -39,4 +39,8 @@ nginx_reload
 log_ok "Workers pinned (worker_processes=${CPUS}, affinity auto). Topology:"
 numactl --hardware
 
+# CPU affinity for nginx workers is only half the locality story: on a single-queue
+# NIC all RX softirq still lands on one core and caps throughput. Spread it (RPS/RFS).
+"$SCRIPT_DIR/tune-network-rps.sh"
+
 "$SCRIPT_DIR/snapshot.sh" --label layer-7

@@ -61,6 +61,18 @@ nginx -T 2>/dev/null | grep -E "worker_|events|keepalive|server_tokens|ssl_" \
   numactl --hardware 2>/dev/null || echo "numactl unavailable (single NUMA node or not installed)"
 } > "$OUT_DIR/cpu-topology.txt"
 
+# ---- 4b. NIC packet steering (RPS/RFS/XPS) ----------------------------------
+# Records whether RX softirq is spread across cores or funneled to one (the
+# single-queue-NIC bottleneck). "rps_cpus=0000" means RPS is off.
+{
+  IFACE="$(ip -o -4 route show to default 2>/dev/null | awk '{print $5; exit}')"
+  echo "iface: ${IFACE:-unknown}"
+  echo "rps_sock_flow_entries: $(cat /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null || echo n/a)"
+  for q in /sys/class/net/"$IFACE"/queues/rx-*; do
+    [ -e "$q/rps_cpus" ] && echo "$(basename "$(dirname "$q")")/$(basename "$q") rps_cpus=$(cat "$q/rps_cpus") rps_flow_cnt=$(cat "$q/rps_flow_cnt" 2>/dev/null)"
+  done
+} > "$OUT_DIR/net-steering.txt" 2>&1 || echo "net steering unavailable" > "$OUT_DIR/net-steering.txt"
+
 # ---- 5. memory --------------------------------------------------------------
 free -h > "$OUT_DIR/memory.txt" 2>&1 || echo "free unavailable" > "$OUT_DIR/memory.txt"
 
