@@ -96,7 +96,7 @@ the improvement delta clearly visible across hardware.
 **On the target** (bare-metal Debian 12) — one script provisions the whole stack:
 
 ```bash
-git clone <this-repo> && cd highthroughput
+git clone https://github.com/alvarotolentino/nginx-at-scale.git && cd nginx-at-scale
 sudo scripts/install-target.sh        # nginx + backend + lux (systemd), TLS, firewall, baseline
 
 # Apply the first optimization layer and snapshot the box state

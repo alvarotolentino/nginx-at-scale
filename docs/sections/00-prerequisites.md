@@ -96,7 +96,7 @@ Then clone the repo on the tester too (for `scripts/load-test.sh` and the k6 sce
 and confirm reachability:
 
 ```bash
-git clone https://github.com/alvarotolentino/nginx-at-scale.git && cd highthroughput
+git clone https://github.com/alvarotolentino/nginx-at-scale.git && cd nginx-at-scale
 scripts/smoke-test.sh --target https://<target-ip>   # remote checks pass
 ```
 
@@ -114,7 +114,7 @@ scripts/monitor.sh --label layer-1 --tier 1 --duration 45 &
 scripts/load-test.sh --target https://<target-ip> --label layer-1 --tier 1
 
 # Copy the tester's load/ results back to the target, then build the report there:
-scp -r results/tier-1/layer-1/load target:<repo>/results/tier-1/layer-1/
+scp -r results/tier-1/layer-1/load target:nginx-at-scale/results/tier-1/layer-1/
 # on TARGET:
 scripts/generate-report.sh --tier 1 --cost 0.41    # --cost adds RPS per $/hr
 ```
