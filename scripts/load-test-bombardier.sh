@@ -169,6 +169,13 @@ fi
 # ---- summary ----------------------------------------------------------------
 RPS="$(grep -E 'Requests/sec' "$OUT_DIR/wrk-static.txt" | awk '{print $2}' | head -1)"
 P99="$(grep -E '^\s*99%' "$OUT_DIR/wrk-static.txt" | awk '{print $2}' | head -1)"
+# Throughput + errors — RPS alone hides a NIC-bound run or one that returned 5xx.
+XFER="$(grep -E '^\s*Throughput' "$OUT_DIR/wrk-static.txt" | awk '{print $2}' | head -1)"
+HTTP_ERRS="$(grep -E '4xx' "$OUT_DIR/wrk-static.txt" | awk '
+  { for (i=1; i<NF; i++) if ($i=="4xx" || $i=="5xx") { v=$(i+2); gsub(",","",v); s+=v } }
+  END { print s+0 }')"
+OTHER_ERRS="$(grep -E '^\s*others' "$OUT_DIR/wrk-static.txt" | awk '{gsub(",","",$3); print $3+0}' | head -1)"
+ERRS="http:${HTTP_ERRS:-0} other:${OTHER_ERRS:-0}"
 UI_RPS="$(grep -E 'http_reqs' "$OUT_DIR/k6-ui.txt" 2>/dev/null \
   | grep -oE '[0-9]+\.[0-9]+/s' | head -1)"
 UI_P99="$(grep -E 'http_req_duration' "$OUT_DIR/k6-ui.txt" 2>/dev/null \
@@ -182,12 +189,17 @@ printf "  %-18s %s\n" "Target:"           "$TARGET"
 printf "  %-18s %s\n" "Label:"            "$LABEL"
 printf "  %-18s %s\n" "RPS (static /):"   "${RPS:-n/a}"
 printf "  %-18s %s\n" "p99 (static /):"   "${P99:-n/a}"
+printf "  %-18s %s\n" "Throughput:"       "${XFER:-n/a}"
+printf "  %-18s %s\n" "Errors (static):"  "$ERRS"
 printf "  %-18s %s\n" "RPS (UI mix):"     "${UI_RPS:-n/a (k6 missing?)}"
 printf "  %-18s %s\n" "p99 (UI mix):"     "${UI_P99:-n/a}"
 if [ "$RUN_K6" = "1" ]; then
   printf "  %-18s %s\n" "k6 journey p95:"  "${K6_P95:-n/a (see k6-browse.txt)}"
 fi
 printf "  %-18s %s\n" "Output:"           "$OUT_DIR"
+echo
+echo "  Pair with the target-side sampler for the same label (run DURING the load):"
+echo "    # on target: scripts/monitor.sh --label ${LABEL} --tier ${TIER} --duration $((DURATION + 10))"
 echo
 echo "  Copy results back to the target, then build the report there:"
 echo "    scp -r ${OUT_DIR} target:<repo>/results/tier-${TIER}/${LABEL}/"
