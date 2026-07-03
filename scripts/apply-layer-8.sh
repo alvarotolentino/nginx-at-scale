@@ -13,10 +13,10 @@ require_root
 log_step "Layer 8: DPDK Hugepages & Environment Setup"
 
 # Guard: DPDK is bare-metal only. The vfio-pci driver sysfs path exists once the
-# module is loadable; on a T1 cloud VM it is typically absent. Warn and bail.
+# module is loadable; on a cloud VM it is typically absent. Warn and bail.
 if [ ! -d /sys/bus/pci/drivers/vfio-pci ] && ! modprobe -n vfio-pci >/dev/null 2>&1; then
-  log_warn "vfio-pci not available — this looks like a cloud VM (T1)."
-  log_warn "DPDK requires bare metal (T2/T3). Skipping Layer 8."
+  log_warn "vfio-pci not available — this looks like a cloud VM, not bare metal."
+  log_warn "DPDK requires bare metal (any tier; T1 m4.metal.small qualifies). Skipping Layer 8."
   exit 1
 fi
 

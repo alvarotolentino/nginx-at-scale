@@ -2,9 +2,9 @@
 # Generate load against the TARGET node from the (separate, isolated) TESTER node.
 # This runs ON THE TESTER — never on the target. No root required.
 #
-# Pair each run with the matching scripts/snapshot.sh --label on the target so the
-# report can merge "what state the box was in" (snapshot) with "how it performed"
-# (load) by --label.
+# Pair each run with, on the target, the matching scripts/snapshot.sh --label (box
+# state, before load) AND scripts/monitor.sh --label (live CPU/mem/net sampling,
+# DURING load). generate-report.sh merges all three halves by --label.
 #
 # Output: results/tier-<tier>/<label>/load/
 # Copy this dir back to the target's results tree (scp) before generate-report.sh.
@@ -155,6 +155,13 @@ fi
 # ---- summary ----------------------------------------------------------------
 RPS="$(grep -E 'Requests/sec' "$OUT_DIR/wrk-static.txt" | awk '{print $2}' | head -1)"
 P99="$(grep -E '^\s*99%' "$OUT_DIR/wrk-static.txt" | awk '{print $2}' | head -1)"
+# Throughput (bandwidth) and error counts — RPS alone hides both. A "fast" run
+# that returned errors or was NIC-bound tells a different story than raw RPS.
+XFER="$(grep -E 'Transfer/sec' "$OUT_DIR/wrk-static.txt" | awk '{print $2}' | head -1)"
+SOCK_ERRS="$(grep -E 'Socket errors' "$OUT_DIR/wrk-static.txt" \
+  | awk -F'[ ,]+' '{s=0; for(i=1;i<=NF;i++) if ($i ~ /^[0-9]+$/) s+=$i; print s; exit}')"
+NON2XX="$(grep -E 'Non-2xx or 3xx' "$OUT_DIR/wrk-static.txt" | awk '{print $NF}' | head -1)"
+ERRS="sock:${SOCK_ERRS:-0} http:${NON2XX:-0}"
 UI_RPS="$(grep -E 'Requests/sec' "$OUT_DIR/wrk-ui.txt" 2>/dev/null | awk '{print $2}' | head -1)"
 UI_P99="$(grep -E '^\s*99%' "$OUT_DIR/wrk-ui.txt" 2>/dev/null | awk '{print $2}' | head -1)"
 # k6 journey: pull the http_req_duration p95 line if a k6 run happened.
@@ -167,12 +174,17 @@ printf "  %-16s %s\n" "Target:"          "$TARGET"
 printf "  %-16s %s\n" "Label:"           "$LABEL"
 printf "  %-16s %s\n" "RPS (static /):"  "${RPS:-n/a}"
 printf "  %-16s %s\n" "p99 (static /):"  "${P99:-n/a}"
+printf "  %-16s %s\n" "Transfer/sec:"    "${XFER:-n/a}"
+printf "  %-16s %s\n" "Errors (static):" "$ERRS"
 printf "  %-16s %s\n" "RPS (UI mix):"    "${UI_RPS:-n/a}"
 printf "  %-16s %s\n" "p99 (UI mix):"    "${UI_P99:-n/a}"
 if [ "$RUN_K6" = "1" ]; then
   printf "  %-16s %s\n" "k6 journey p95:" "${K6_P95:-n/a (see k6-browse.txt)}"
 fi
 printf "  %-16s %s\n" "Output:"          "$OUT_DIR"
+echo
+echo "  Pair with the target-side sampler for the same label (run DURING the load):"
+echo "    # on target: scripts/monitor.sh --label ${LABEL} --tier ${TIER} --duration $((DURATION + 10))"
 echo
 echo "  Copy results back to the target, then build the report there:"
 echo "    scp -r ${OUT_DIR} target:<repo>/results/tier-${TIER}/${LABEL}/"

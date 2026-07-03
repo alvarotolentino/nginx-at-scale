@@ -38,15 +38,26 @@ source "$SCRIPT_DIR/_lib.sh"
 require_root
 
 # Prompt the operator to run the matching load test from the tester before moving on.
+# While waiting, monitor.sh samples this box's CPU/mem/net/sockets so the report can
+# show what the load COST the target, not just what the tester measured. The sampler
+# is stopped (and its summary written) when the operator presses ENTER.
 prompt_load() {
-  local label="$1"
+  local label="$1" mon_pid=""
   echo
   echo "  >>> From the TESTER node, generate load for '${label}' now:"
   echo "        scripts/load-test.sh --target https://<target-ip> --label ${label} --tier ${TIER}"
   echo "      Add --k6 to also capture the browser-accurate API journey"
   echo "      (GET / -> /api/products -> /api/products/<id>); add --api for a raw backend datapoint."
   if [ "$PAUSE" = "1" ]; then
+    "$SCRIPT_DIR/monitor.sh" --label "$label" --tier "$TIER" &
+    mon_pid=$!
+    echo "      (target-side monitor is sampling as pid ${mon_pid} — CPU/mem/net land in"
+    echo "       results/tier-${TIER}/${label}/monitor/ when you press ENTER)"
     read -rp "  Press ENTER once the tester load run for '${label}' has finished... " _
+    kill -TERM "$mon_pid" 2>/dev/null || true
+    wait "$mon_pid" 2>/dev/null || true
+  else
+    echo "      (--no-pause: not sampling — run scripts/monitor.sh manually during load)"
   fi
 }
 

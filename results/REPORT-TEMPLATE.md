@@ -1,7 +1,7 @@
 # Results — Qualitative Observations
 
 Hand-filled companion to the auto-generated `tier-N/REPORT.md`. The automated report
-captures the numbers (RPS, p99); this captures the *story* — what you expected, what
+captures the numbers (RPS, p99, errors, target CPU/net cost); this captures the *story* — what you expected, what
 actually happened, and what surprised you. One row per optimization layer.
 
 | Layer | What changed | Expected impact | Actual impact | Surprise findings |
@@ -18,9 +18,11 @@ actually happened, and what surprised you. One row per optimization layer.
 
 ## Notes per tier
 
-### Tier 1 (cloud VM)
+### Tier 1 (m4.metal.small — EPYC 4244P 6C/12T, 64 GB DDR5, 2x 10 GbE, $0.41/hr)
 - Realistic ceiling: _fill in_
 - Bottleneck hit first: _fill in_
+- Best run — peak CPU % / busiest core % / softirq % (monitor summary): _fill in_
+- Best run — RPS/core and RPS per $/hr (report Efficiency table): _fill in_
 
 ### Tier 2 (32-core bare metal)
 - Realistic ceiling: _fill in_
