@@ -2,21 +2,28 @@
 
 ## Hardware tiers
 
-| Tier | Spec | Provider | Latitude.sh server type |
-|------|------|----------|-------------------------|
-| **T1 — Baseline** | 4–8 vCPU, 16–32 GB RAM | Any cloud (AWS/GCP/DO) | n/a (cloud VM) |
-| **T2 — Mid Bare Metal** | 32-core, 128 GB RAM, 25 GbE | Latitude.sh | `c3.medium.x86` (or current 32-core SKU) |
-| **T3 — High-End Bare Metal** | 128-core, 512 GB RAM, 100 GbE | Latitude.sh | `c3.large.x86` (or current 128-core SKU) |
+| Tier | Spec | Cost | Latitude.sh server type |
+|------|------|------|-------------------------|
+| **T1 — Entry Bare Metal** | AMD EPYC 4244P, 6C/12T @ 3.8 GHz, 64 GB DDR5, 2× 960 GB NVMe, 2× 10 GbE | $0.41/hr | `m4.metal.small` |
+| **T2 — Mid Bare Metal** | 32-core, 128 GB RAM, 25 GbE | — | `c3.medium.x86` (or current 32-core SKU) |
+| **T3 — High-End Bare Metal** | 128-core, 512 GB RAM, 100 GbE | — | `c3.large.x86` (or current 128-core SKU) |
 
-### Provisioning T2 / T3 on Latitude.sh
+T1 is deliberately the **cheapest bare-metal SKU**: 6 dedicated Zen 4 cores at $0.41/hr —
+about the hourly price of an 8-vCPU *shared* cloud VM. The tier exists to prove the
+efficiency thesis: tuned correctly, this small box's **RPS per core / RPS per $** beats a
+price-equivalent VM by a wide margin. Its 2× 10 GbE also matters: one NIC can serve
+traffic while the other keeps SSH alive during DPDK (Layer 8), and 10 Gbps is a real,
+reachable line rate — the monitor will show you when you hit it.
+
+### Provisioning on Latitude.sh
 
 1. Create a project, then **Deploy → Bare Metal Server**.
-2. **Location**: pick a region with the 25/100 GbE SKU in stock.
-3. **Server type**: select the 32-core (T2) or 128-core (T3) plan above.
+2. **Location**: pick a region with the SKU in stock.
+3. **Server type**: `m4.metal.small` (T1), 32-core (T2), or 128-core (T3).
 4. **Operating System**: choose **Debian 12 (Bookworm)** — minimal image.
 5. Add your SSH key, deploy, and note the public IP.
-6. For DPDK (Layer 8) request/confirm a **second NIC** — DPDK claims one NIC entirely;
-   you need the other for management/SSH.
+6. For DPDK (Layer 8) confirm the box has a **second NIC** — DPDK claims one NIC entirely;
+   you need the other for management/SSH. (`m4.metal.small` ships with 2× 10 GbE.)
 
 > All sysctl and Nginx directives in this guide are pure kernel/Nginx — nothing is
 > Debian-specific. They run unmodified on Ubuntu 24.04 LTS after a small hardening step
@@ -29,8 +36,12 @@ target steals CPU/IRQs from the thing you're measuring and pollutes the numbers.
 
 | Node | Role | What runs there |
 |------|------|-----------------|
-| **Target** | The tuned bare-metal box under test | nginx + backend + lux (systemd), the sysctl/nginx tuning layers |
-| **Tester** | A separate, isolated VM/instance | `wrk` / `wrk2` / `k6` load generators only |
+| **Target** | The tuned bare-metal box under test | nginx + backend + lux (systemd), the sysctl/nginx tuning layers, `snapshot.sh` (state, before load) + `monitor.sh` (CPU/mem/net sampling, during load) |
+| **Tester** | A separate, isolated VM/instance | `wrk` / `wrk2` / `k6` (or `bombardier`) load generators only |
+
+`monitor.sh` is target-side by design and costs almost nothing (pure `/proc` + `/sys`
+reads every 2 s) — unlike running the load generator on the target, which would steal
+the very CPU being measured.
 
 ## Target node — provisioning
 
@@ -89,19 +100,23 @@ git clone https://github.com/alvarotolentino/nginx-at-scale.git && cd highthroug
 scripts/smoke-test.sh --target https://<target-ip>   # remote checks pass
 ```
 
-## Running a layer (the manual two-step)
+## Running a layer (the manual three-step)
 
 ```bash
-# TARGET: apply + snapshot one layer (or the whole sweep with apply-all-layers.sh)
+# TARGET: apply + snapshot one layer (or the whole sweep with apply-all-layers.sh,
+# which starts/stops the monitor for you around each load pause)
 sudo scripts/apply-layer-1.sh
 
+# TARGET: start sampling utilization for the load window (background)
+scripts/monitor.sh --label layer-1 --tier 1 --duration 45 &
+
 # TESTER: generate load against the target for that same label
-scripts/load-test.sh --target https://<target-ip> --label layer-1 --tier 2
+scripts/load-test.sh --target https://<target-ip> --label layer-1 --tier 1
 
 # Copy the tester's load/ results back to the target, then build the report there:
-scp -r results/tier-2/layer-1/load target:<repo>/results/tier-2/layer-1/
+scp -r results/tier-1/layer-1/load target:<repo>/results/tier-1/layer-1/
 # on TARGET:
-scripts/generate-report.sh --tier 2
+scripts/generate-report.sh --tier 1 --cost 0.41    # --cost adds RPS per $/hr
 ```
 
 ## What you'll build
@@ -116,6 +131,7 @@ flowchart LR
         nginx["nginx (systemd)<br/>CAP_NET_BIND_SERVICE<br/>/ → /var/www/1b-shop (SPA)"]
         backend["backend (systemd, appsvc)<br/>127.0.0.1:8080 (loopback)"]
         lux["lux (systemd, luxsvc)<br/>127.0.0.1:6379 (loopback, 0700)"]
+        mon["snapshot.sh (state, pre-load)<br/>monitor.sh (CPU/mem/net, during load)"]
     end
     lt -->|"HTTPS :443"| fw
     fw --> nginx

@@ -2,8 +2,9 @@
 
 > **Goal of this stage.** On multi-socket bare metal (T2/T3), stop workers from paying the
 > **cross-socket memory tax**. Pin each Nginx worker to a distinct CPU so its cache stays
-> hot and its memory stays local to one NUMA node. This is a **bare-metal** optimization —
-> on a single-socket T1 cloud VM there is no NUMA topology to exploit.
+> hot and its memory stays local to one NUMA node. This is a **multi-socket** optimization —
+> single-socket boxes like T1 (`m4.metal.small`, one NUMA node) have no cross-socket tax to
+> remove; there, pinning only buys reduced worker-migration churn.
 
 The config is [nginx/sections/layer-07-numa.conf](../../nginx/sections/layer-07-numa.conf),
 applied by [apply-layer-7.sh](../../scripts/apply-layer-7.sh).

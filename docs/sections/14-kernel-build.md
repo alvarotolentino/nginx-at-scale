@@ -2,9 +2,10 @@
 
 > **Optional, last-mile, bare-metal only.** Everything in Layers 1–8 works on the **stock
 > Debian 12 kernel** — you do not need to rebuild the kernel to reproduce this guide. This
-> appendix is for squeezing the final few percent on T2/T3 when the stock kernel's
-> generic-distro compromises become the measurable bottleneck. On T1 (cloud VM) you
-> usually can't boot a custom kernel anyway, so this is bare-metal territory.
+> appendix is for squeezing the final few percent when the stock kernel's generic-distro
+> compromises become the measurable bottleneck. All three tiers are bare metal, so a custom
+> kernel boots anywhere — but the payoff is mainly T2/T3; on T1 spend the effort on Layers
+> 1–8 first.
 
 ## When a custom kernel is actually worth it
 

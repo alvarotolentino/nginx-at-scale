@@ -11,16 +11,29 @@ Each layer is measured the same way, split across the two nodes:
 
 1. **TARGET** applies + snapshots a layer: `sudo scripts/apply-layer-N.sh` → records box
    state into `results/tier-N/<label>/snapshot/`.
-2. **TESTER** generates load for that label: `scripts/load-test.sh --target https://<ip>
+2. **TARGET** samples utilization during the load window:
+   `scripts/monitor.sh --label layer-N --tier N --duration 45 &` → records the CPU /
+   softirq / per-service / NIC / socket time series into `results/tier-N/<label>/monitor/`.
+   (`apply-all-layers.sh` starts and stops this automatically around each load pause.)
+3. **TESTER** generates load for that label: `scripts/load-test.sh --target https://<ip>
    --label layer-N --tier N` → records `wrk-static.txt`, `wrk-api.txt` into
    `results/tier-N/<label>/load/`.
-3. Copy the tester's `load/` dirs back, then on the target run
-   `scripts/generate-report.sh --tier N`.
+4. Copy the tester's `load/` dirs back, then on the target run
+   `scripts/generate-report.sh --tier N --cost <hourly-price>`.
 
-[generate-report.sh](../../scripts/generate-report.sh) parses `Requests/sec` and the p99
-line from each wrk file, computes the **Δ vs baseline**, and writes
-`results/tier-N/REPORT.md`. The first run (baseline, alphabetically first) is the
-comparison base for every delta.
+[generate-report.sh](../../scripts/generate-report.sh) writes `results/tier-N/REPORT.md`
+with three tables:
+
+1. **Tester view** — RPS (static / UI mix / API), p99, transfer/s, error count, and the
+   **Δ vs baseline**. The first run (baseline, alphabetically first) is the comparison
+   base for every delta.
+2. **Target view** — from `monitor/summary.txt`: CPU avg/peak, busiest single core,
+   %softirq, nginx CPU/RSS, peak open connections, TIME-WAIT, peak NIC Mbps,
+   retransmits, and listen (accept-queue) drops. This is what tells you **which wall**
+   each layer hit — a flat RPS with one core pegged is a packet-steering problem, not
+   an nginx problem; a flat RPS at NIC line rate is a bandwidth problem.
+3. **Efficiency** — RPS/core, and with `--cost`, RPS per $/hr — the numbers that make
+   tiers (and cloud VMs) comparable.
 
 ## Results table (fill from `tier-N/REPORT.md`)
 
@@ -67,8 +80,12 @@ This is the expected **shape** of the curve (your magnitudes depend on hardware)
    tier — most "the server can't scale" problems are unconfigured defaults.
 2. **Hardware sets the ceiling, tuning reaches it.** Same layers, wildly different ceilings
    across T1→T2→T3 ([Section 11](11-tiers.md)).
-3. **Bare metal wins per-dollar.** Compare price-equivalent boxes on peak concurrency/$,
-   not spec sheets. This is the project's actual thesis.
+3. **Bare metal wins per-dollar.** Compare price-equivalent boxes on RPS per $/hr and
+   peak concurrency/$, not spec sheets (T1: `--cost 0.41`). This is the project's actual
+   thesis.
+4. **A result is RPS + tail + errors + cost.** The same RPS at 40% CPU vs 100% CPU are
+   different findings; an RPS "win" with listen drops is a loss. The monitor table is
+   what keeps the deltas honest.
 4. **Some layers are tier-specific.** DPDK is impossible on T1; NUMA is moot on T1. Knowing
    *which* layer matters *where* is the engineering judgment this guide teaches.
 

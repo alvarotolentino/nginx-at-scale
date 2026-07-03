@@ -1,8 +1,9 @@
 # Layer 8 — DPDK & Kernel Bypass
 
-> **Hardware scope.** DPDK is for **T2/T3 bare metal only** — never a T1 cloud VM,
-> whose virtual NIC and shared host kernel cannot give a userspace poll-mode driver
-> exclusive control of the hardware.
+> **Hardware scope.** DPDK is **bare metal only** — never a cloud VM, whose virtual NIC
+> and shared host kernel cannot give a userspace poll-mode driver exclusive control of
+> the hardware. All three tiers qualify; on T1 (`m4.metal.small`) use its second 10 GbE
+> port for DPDK and keep management/SSH on the first.
 
 ## What DPDK is
 

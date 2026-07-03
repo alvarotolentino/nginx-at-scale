@@ -96,7 +96,8 @@ sysctl net.ipv4.tcp_rmem net.ipv4.tcp_wmem
   this is where RPS starts climbing meaningfully versus Layer 1.
 - Faster reclamation of dead connections under churn; lower tail latency on bursty
   keepalive traffic.
-- On T1 (cloud VM) the buffer gains are smaller (the virtual NIC and shared host cap you),
-  but BBR and `tcp_mtu_probing` still help on lossy paths.
+- On T1 (`m4.metal.small`, 10 GbE) the buffer gains are real — the NIC is hardware, not a
+  capped vNIC — but the ceiling arrives sooner than on T2/T3 simply because 10 Gbps is
+  less headroom. Watch `tx_mbps_peak` in the monitor summary to see when you reach it.
 
 Next: [Layer 3 — Nginx Worker & Event Model](05-layer-03-events.md).

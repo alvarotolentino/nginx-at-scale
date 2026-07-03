@@ -12,11 +12,17 @@ the **same layers** (1–8). The delta is what differs.
 
 ## The three tiers
 
-| Tier | Spec | Provider | Realistic ceiling |
-|------|------|----------|-------------------|
-| **T1 — Baseline** | 4–8 vCPU, 16–32 GB RAM | Any cloud (AWS/GCP/DO) | hundreds of k conns |
-| **T2 — Mid Bare Metal** | 32-core, 128 GB, 25 GbE | Latitude.sh | low millions of conns |
-| **T3 — High-End Bare Metal** | 128-core, 512 GB, 100 GbE | Latitude.sh | ~1B (theoretical) |
+| Tier | Spec | Cost | Realistic ceiling |
+|------|------|------|-------------------|
+| **T1 — Entry Bare Metal** | `m4.metal.small`: EPYC 4244P 6C/12T @ 3.8 GHz, 64 GB DDR5, 2× 10 GbE | $0.41/hr | high hundreds of k conns |
+| **T2 — Mid Bare Metal** | 32-core, 128 GB, 25 GbE | — | low millions of conns |
+| **T3 — High-End Bare Metal** | 128-core, 512 GB, 100 GbE | — | ~1B (theoretical) |
+
+T1 is small on purpose. It is the cheapest bare-metal SKU Latitude sells, and it is the
+box where the *efficiency* argument is sharpest: every core is dedicated, the NIC is
+real, and $0.41/hr is cloud-VM money. The T1 question is not "how big is the ceiling"
+but "**how much RPS does each core and each dollar produce** once tuned" — read the
+Efficiency table in `REPORT.md` (`generate-report.sh --cost 0.41`).
 
 See [Section 00](00-prerequisites.md) for provisioning each. Final numbers land in
 [Section 13](13-results.md).
@@ -26,24 +32,27 @@ See [Section 00](00-prerequisites.md) for provisioning each. Final numbers land 
 Not every layer pays off on every tier — a key lesson. Tuning a T1 VM with DPDK is
 pointless; skipping NUMA pinning on T3 leaves throughput on the floor.
 
-| Layer | T1 (cloud VM) | T2 (32c bare metal) | T3 (128c bare metal) |
+| Layer | T1 (6c bare metal) | T2 (32c bare metal) | T3 (128c bare metal) |
 |-------|:---:|:---:|:---:|
 | 1 — FD & socket limits | ✅ critical | ✅ critical | ✅ critical |
-| 2 — TCP/IP tuning | ⚠️ partial¹ | ✅ | ✅ |
+| 2 — TCP/IP tuning | ✅¹ | ✅ | ✅ |
 | 3 — Worker & event model | ✅ critical | ✅ critical | ✅ critical |
 | 4 — jemalloc | ✅ | ✅ | ✅ |
 | 5 — TLS resumption | ✅ | ✅ | ✅ |
 | 6 — Async file I/O | ➖ marginal² | ✅ | ✅ |
-| 7 — NUMA & CPU affinity | ➖ none³ | ✅ | ✅ critical |
-| 8 — DPDK | ❌ impossible⁴ | ✅ | ✅ |
+| 7 — NUMA & CPU affinity | ➖ minor³ | ✅ | ✅ critical |
+| 8 — DPDK | ✅ possible⁴ | ✅ | ✅ |
 
-¹ Buffer autosizing gains are capped by the virtual NIC and shared host; BBR + MTU probing
-  still help on lossy/overlay paths.
+¹ Real NIC, so BBR + buffer autosizing act on actual hardware — unlike a cloud vNIC,
+  where the shared host caps the gain before the tuning does.
 ² Depends on whether assets are large enough and the page cache is cold; small SPA assets
   stay on the cached path (`directio 512k`).
-³ Single NUMA node — nothing to keep local. CPU pin only avoids migration churn.
-⁴ A virtual NIC + shared host kernel cannot give a userspace poll-mode driver exclusive
-  hardware control. DPDK is bare-metal only — `apply-layer-8.sh` detects this and bails on T1.
+³ Single socket / single NUMA node on the 4244P — nothing to keep local. CPU pinning still
+  avoids migration churn, and with only 6 cores, IRQ-vs-worker placement is worth checking
+  (watch `cpu_max_core_peak_pct` vs `cpu_peak_pct` in the monitor summary).
+⁴ `m4.metal.small` ships 2× 10 GbE: DPDK claims one NIC entirely while SSH stays on the
+  other. On a cloud VM this layer is impossible (virtual NIC, shared host kernel) — one of
+  the concrete reasons this tier is bare metal.
 
 ## Why bare metal wins (the mechanisms)
 
@@ -61,9 +70,20 @@ inserts:
 
 ## Cost framing
 
-The honest comparison is **price-equivalent**, not spec-equivalent: take the monthly cost
-of the T1 cloud VM and the T2/T3 bare-metal box, and compare *peak concurrency per dollar*.
-That ratio — not the raw connection count — is the project's actual claim. Record both the
-absolute numbers and the $/peak-conn in [Section 13](13-results.md).
+The honest comparison is **price-equivalent**, not spec-equivalent. T1 makes this
+concrete: $0.41/hr for `m4.metal.small` is almost exactly the on-demand price of an
+8-vCPU/16 GB *shared* cloud VM (e.g. AWS c5.2xlarge, ~$0.34–0.39/hr). Same money, two
+very different machines — one has 6 dedicated Zen 4 cores, DDR5, a real 10 GbE NIC and
+zero hypervisor tax; the other has burstable shares of someone else's box.
+
+The comparable numbers are the **Efficiency table** in `REPORT.md`
+(`generate-report.sh --tier N --cost <hourly-price>`):
+
+- **RPS / core** — how much work each core does once software stops being the wall.
+- **RPS per $/hr** — the purchasing decision in one number.
+- **peak conns per $** — the concurrency variant, for the connection-ceiling milestones.
+
+That ratio — not the raw connection count — is the project's actual claim. Record both
+the absolute numbers and the per-dollar figures in [Section 13](13-results.md).
 
 Next: [Section 12 — Advanced: FreeBSD Networking Stack](12-freebsd.md).
