@@ -25,6 +25,7 @@ flowchart LR
         nginx["nginx (systemd)<br/>CAP_NET_BIND_SERVICE<br/>/ → /var/www/1b-shop (SPA)"]
         backend["backend (systemd, appsvc)<br/>127.0.0.1:8080 (loopback)"]
         lux["lux (systemd, luxsvc)<br/>127.0.0.1:6379 (loopback, 0700)"]
+        mon["snapshot.sh (state, pre-load)<br/>monitor.sh (CPU/mem/net, during load)"]
     end
     lt -->|"HTTPS :443"| fw
     fw --> nginx
@@ -47,11 +48,16 @@ flowchart LR
 
 ## Hardware Tiers
 
-| Tier | Description | Provider |
-|------|-------------|----------|
-| **T1 — Baseline** | Mid-range cloud VM (4–8 vCPU, 16–32 GB RAM) | Any cloud (AWS/GCP/DO) |
-| **T2 — Mid Bare Metal** | 32-core, 128 GB RAM, 25 GbE NIC | Latitude.sh |
-| **T3 — High-End Bare Metal** | 128-core, 512 GB RAM, 100 GbE NIC | Latitude.sh |
+| Tier | Description | Provider | Cost |
+|------|-------------|----------|------|
+| **T1 — Entry Bare Metal** | `m4.metal.small` — AMD EPYC 4244P (6C/12T @ 3.8 GHz), 64 GB DDR5, 2× 960 GB NVMe, 2× 10 GbE | Latitude.sh | **$0.41/hr** |
+| **T2 — Mid Bare Metal** | 32-core, 128 GB RAM, 25 GbE NIC | Latitude.sh | — |
+| **T3 — High-End Bare Metal** | 128-core, 512 GB RAM, 100 GbE NIC | Latitude.sh | — |
+
+T1 is the project's thesis in miniature: $0.41/hr buys roughly the same as an 8-vCPU
+shared cloud VM (e.g. c5.2xlarge) — but here it's 6 dedicated Zen 4 cores, a real NIC,
+real NUMA, and no hypervisor. Tuned to its limit, the efficiency comparison is made in
+**RPS per core and RPS per dollar-hour**, not raw connection counts.
 
 Each tier starts from the same baseline and applies the same progressive tuning, making
 the improvement delta clearly visible across hardware.
@@ -97,19 +103,41 @@ sudo scripts/install-target.sh        # nginx + backend + lux (systemd), TLS, fi
 sudo scripts/apply-layer-1.sh
 ```
 
+**During the load window, on the target** — sample what the load costs the box:
+
+```bash
+scripts/monitor.sh --label layer-1 --tier 1 --duration 45 &   # CPU/mem/net/socket time series
+```
+
 **On the tester** (separate node) — generate load against the target:
 
 ```bash
 scripts/load-test.sh --target https://<target-ip> --label layer-1 --tier 1
 ```
 
-Full sweep (target applies + snapshots every layer, pausing for the tester between each):
+Full sweep (target applies + snapshots every layer, pausing for the tester between each —
+the monitor is started/stopped automatically around each pause):
 
 ```bash
 sudo scripts/apply-all-layers.sh --tier 1
-# copy the tester's results back, then:  scripts/generate-report.sh --tier 1
-# → results/tier-1/REPORT.md
+# copy the tester's results back, then:  scripts/generate-report.sh --tier 1 --cost 0.41
+# → results/tier-1/REPORT.md  (tester view + target view + RPS/core + RPS per $/hr)
 ```
+
+## Measurement model — both sides of the wire
+
+Every labeled run produces **three** result sets, merged by `--label`:
+
+| Side | Script | When | What it captures |
+|------|--------|------|------------------|
+| Target | `snapshot.sh` | before load | Box *state*: kernel params, nginx config, topology, allocator |
+| Target | `monitor.sh` | **during** load | Box *cost*: CPU (total, busiest core, %softirq), per-service CPU/RSS via cgroups, NIC Mbps/pps, open sockets/TIME-WAIT, retransmits, accept-queue drops — 2 s time series + summary |
+| Tester | `load-test.sh` | during load | Client *experience*: RPS, latency percentiles, transfer/s, socket + HTTP errors |
+
+`generate-report.sh` joins them into one report so each layer answers not just "did RPS
+go up" but "**what did it cost**, and what is the wall now" — CPU-bound, one core pegged
+on softirq, NIC at line rate, or accept queue overflowing. With `--cost`, it also computes
+**RPS per $/hr**, the number that makes bare metal vs cloud comparable.
 
 > Just want to poke at the app locally? The Docker stack in [`dev/`](dev/) brings it up in
 > one command — but it is **not** the benchmark target (containers hide the very tuning
@@ -141,8 +169,9 @@ nginx/                     baseline.conf, per-layer configs (loopback upstream, 
 kernel/                    sysctl.d snippets per layer
 benchmarks/                wrk Lua scripts, k6 scenarios
 scripts/                   install-target.sh, apply-layer-N.sh, apply-all-layers.sh,
-                           snapshot.sh (target), load-test.sh (tester), generate-report.sh
-results/                   benchmark output per tier (<label>/snapshot + <label>/load)
+                           snapshot.sh + monitor.sh (target), load-test.sh (tester),
+                           generate-report.sh [--cost $/hr]
+results/                   benchmark output per tier (<label>/{snapshot,monitor,load})
 docs/                      written guide sections
 dev/                       Docker Compose — LOCAL DEV ONLY, not the benchmark target
 ```
