@@ -85,7 +85,7 @@ the improvement delta clearly visible across hardware.
 
 ## Prerequisites
 
-- **Target node** — Debian 12 (Bookworm) minimal, bare metal. Everything else (nginx,
+- **Target node** — Debian 13 (Trixie) or 12 (Bookworm) minimal, bare metal. Everything else (nginx,
   Rust ≥ 1.85, Node 20, numactl, nftables, libaio) is installed by `install-target.sh`.
 - **Tester node** — a separate VM/instance with `wrk`, `wrk2`, `k6`.
 - See [docs/sections/00-prerequisites.md](docs/sections/00-prerequisites.md) for the full

@@ -20,7 +20,7 @@ reachable line rate — the monitor will show you when you hit it.
 1. Create a project, then **Deploy → Bare Metal Server**.
 2. **Location**: pick a region with the SKU in stock.
 3. **Server type**: `m4.metal.small` (T1), 32-core (T2), or 128-core (T3).
-4. **Operating System**: choose **Debian 12 (Bookworm)** — minimal image.
+4. **Operating System**: choose **Debian 13 (Trixie)** or **Debian 12 (Bookworm)** — minimal image.
 5. Add your SSH key, deploy, and note the public IP.
 6. For DPDK (Layer 8) confirm the box has a **second NIC** — DPDK claims one NIC entirely;
    you need the other for management/SSH. (`m4.metal.small` ships with 2× 10 GbE.)
