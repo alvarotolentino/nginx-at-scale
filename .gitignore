@@ -33,3 +33,6 @@ nginx/static/
 docs/SPEC.md
 docs/PROJECT_PLAN.md
 docs/requirement.md
+
+# vscode settings
+.vscode/
