@@ -77,7 +77,7 @@ CG_ROOT="/sys/fs/cgroup/system.slice"
 # busy = total - idle - iowait. Diffed between two snapshots in compute_cpu.
 snap_stat()  { cat /proc/stat; }
 
-# service cgroup CPU time (usec) + current RSS (MB). cgroup v2 (Debian 12 default);
+# service cgroup CPU time (usec) + current RSS (MB). cgroup v2 (Debian 12/13 default);
 # absent cgroup (e.g. service not running) reads as 0 — columns stay parseable.
 cg_cpu()  { awk '$1=="usage_usec"{print $2; f=1} END{if(!f) print 0}' \
               "$CG_ROOT/$1.service/cpu.stat" 2>/dev/null || echo 0; }

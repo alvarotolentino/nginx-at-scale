@@ -24,10 +24,12 @@ if [ ! -f /etc/nginx/certs/nginx.crt ]; then
 fi
 
 # kernel AIO needs libaio at runtime. nginx links it dynamically when aio is enabled;
-# without the lib, `aio on` fails the config test. Install if absent.
+# without the lib, `aio on` fails the config test. Install if absent. The runtime
+# package name differs by release (libaio1 on Debian 12, libaio1t64 on Debian 13),
+# so install libaio-dev, which depends on the correct one for the running release.
 if ! ldconfig -p | grep -q 'libaio\.so'; then
   log_step "libaio not found — installing"
-  apt-get update -qq && apt-get install -y libaio1 libaio-dev \
+  apt-get update -qq && apt-get install -y libaio-dev \
     || log_warn "libaio install failed; aio on may not load"
 fi
 

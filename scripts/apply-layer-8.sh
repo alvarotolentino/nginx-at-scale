@@ -20,9 +20,13 @@ if [ ! -d /sys/bus/pci/drivers/vfio-pci ] && ! modprobe -n vfio-pci >/dev/null 2
   exit 1
 fi
 
-# DPDK tooling + hugepage helpers.
+# DPDK tooling + hugepage helpers. Installed separately so a renamed helper
+# package can't abort the DPDK install: the hugepage tools ship as `hugepages`
+# on Debian 12 but `libhugetlbfs-bin` on Debian 13.
 apt-get update -qq
-apt-get install -y dpdk dpdk-dev hugepages || log_warn "some DPDK packages may differ by release"
+apt-get install -y dpdk dpdk-dev || log_warn "DPDK packages may differ by release"
+apt-get install -y libhugetlbfs-bin || apt-get install -y hugepages \
+  || log_warn "hugepage helper tools unavailable (optional — the sysctl reservation below still applies)"
 
 # Apply hugepage reservation from the layer sysctl snippet.
 if ! grep -q "Hugepages for DPDK" "$PERF_SYSCTL_FILE" 2>/dev/null; then

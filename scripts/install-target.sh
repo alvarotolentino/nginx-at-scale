@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Provision the TARGET node (bare metal, Debian 12) from a clean install.
+# Provision the TARGET node (bare metal, Debian 12 or 13) from a clean install.
 #
 # Installs and wires up the full stack as systemd services — NO Docker:
 #   lux (RESP DB, loopback)  ->  backend (Axum, loopback)  ->  nginx (TLS, :443)
