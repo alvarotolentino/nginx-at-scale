@@ -23,14 +23,23 @@ if [ ! -f /etc/nginx/certs/nginx.crt ]; then
   chmod 600 /etc/nginx/certs/nginx.key
 fi
 
-# kernel AIO needs libaio at runtime. nginx links it dynamically when aio is enabled;
-# without the lib, `aio on` fails the config test. Install if absent. The runtime
-# package name differs by release (libaio1 on Debian 12, libaio1t64 on Debian 13),
-# so install libaio-dev, which depends on the correct one for the running release.
-if ! ldconfig -p | grep -q 'libaio\.so'; then
-  log_step "libaio not found — installing"
+# The config uses `aio threads` (thread-pool AIO), which needs nginx built
+# --with-threads — a COMPILE flag, not a runtime lib. Verify it up front so we fail
+# with a clear message instead of a cryptic `nginx -t` error. (Native `aio on` would
+# instead need --with-file-aio + libaio; the config comment explains switching back.)
+if ! nginx -V 2>&1 | tr ' ' '\n' | grep -q -- '--with-threads'; then
+  echo "ERROR: this nginx is not built --with-threads, so 'aio threads' won't load." >&2
+  echo "  Fix: rebuild nginx with --with-threads (and --with-file-aio for native 'aio on')," >&2
+  echo "  or edit nginx/sections/layer-06-aio.conf to remove the aio/directio block (Layer 6 == Layer 5)." >&2
+  exit 1
+fi
+# If you switch the config back to native `aio on`, nginx also needs libaio at
+# runtime — install libaio-dev (pulls the right libaio1/libaio1t64 for the release).
+if nginx -V 2>&1 | tr ' ' '\n' | grep -q -- '--with-file-aio' \
+   && ! ldconfig -p | grep -q 'libaio\.so'; then
+  log_step "libaio not found — installing (needed only if you use native 'aio on')"
   apt-get update -qq && apt-get install -y libaio-dev \
-    || log_warn "libaio install failed; aio on may not load"
+    || log_warn "libaio install failed; native 'aio on' may not load"
 fi
 
 # Install the AIO config (TLS + aio/directio on the static location).
