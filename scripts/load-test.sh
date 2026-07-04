@@ -37,19 +37,30 @@ CONNS="400"
 CONNS_SET="0"     # track whether the user overrode --conns explicitly
 RUN_K6="0"
 RUN_API="0"   # API path stresses the backend, not nginx; off by default
+RUN_H2="0"    # warm-HTTP/2 (h2load) static test; off by default. See --h2 below.
+# H2 load shape: HTTP/2 multiplexes many requests over FEW connections, so the
+# realistic test is a small connection count with many concurrent streams each —
+# NOT wrk's thousands of HTTP/1.1 connections. These have their own knobs so the
+# h2 stage doesn't inherit --conns (4000 conns x 100 streams = 400k streams would
+# swamp the server and measure nothing useful).
+H2_CONNS="100"     # HTTP/2 connections (one TLS handshake each — the amortized cost)
+H2_STREAMS="100"   # max concurrent streams per connection (the multiplexing lever)
 
 # ---- arg parsing ------------------------------------------------------------
 while [ $# -gt 0 ]; do
   case "$1" in
-    --target)   TARGET="$2"; shift 2 ;;
-    --label)    LABEL="$2"; shift 2 ;;
-    --tier)     TIER="$2"; shift 2 ;;
-    --duration) DURATION="$2"; shift 2 ;;
-    --threads)  THREADS="$2"; shift 2 ;;
-    --conns)    CONNS="$2"; CONNS_SET="1"; shift 2 ;;
-    --profile)  PROFILE="$2"; shift 2 ;;
-    --k6)       RUN_K6="1"; shift 1 ;;
-    --api)      RUN_API="1"; shift 1 ;;
+    --target)     TARGET="$2"; shift 2 ;;
+    --label)      LABEL="$2"; shift 2 ;;
+    --tier)       TIER="$2"; shift 2 ;;
+    --duration)   DURATION="$2"; shift 2 ;;
+    --threads)    THREADS="$2"; shift 2 ;;
+    --conns)      CONNS="$2"; CONNS_SET="1"; shift 2 ;;
+    --profile)    PROFILE="$2"; shift 2 ;;
+    --k6)         RUN_K6="1"; shift 1 ;;
+    --api)        RUN_API="1"; shift 1 ;;
+    --h2)         RUN_H2="1"; shift 1 ;;
+    --h2-conns)   H2_CONNS="$2"; shift 2 ;;
+    --h2-streams) H2_STREAMS="$2"; shift 2 ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
@@ -76,6 +87,20 @@ fi
 if ! command -v wrk >/dev/null 2>&1; then
   echo "ERROR: wrk not installed on the tester. See docs/sections/00-prerequisites.md" >&2
   exit 1
+fi
+if [ "$RUN_H2" = "1" ]; then
+  if ! command -v h2load >/dev/null 2>&1; then
+    echo "ERROR: --h2 requires h2load (apt-get install nghttp2-client). See docs/sections/00-prerequisites.md" >&2
+    exit 1
+  fi
+  # HTTP/2 here is h2-over-TLS (ALPN) — nginx serves it only on the :443 ssl
+  # listener. An http:// target would fall back to h2c/upgrade and measure the
+  # wrong thing, so require https for the warm-H2 test.
+  case "$TARGET" in
+    https://*) ;;
+    *) echo "ERROR: --h2 needs an https:// target (HTTP/2 is negotiated over TLS/ALPN); got '$TARGET'" >&2
+       exit 1 ;;
+  esac
 fi
 
 # ---- tester FD limit ----------------------------------------------------------
@@ -115,6 +140,7 @@ echo "Loading ${TARGET} as '${LABEL}' (tier ${TIER}) for ${DURATION}s (${THREADS
   echo "threads:  $THREADS"
   echo "conns:    $CONNS"
   echo "profile:  $PROFILE"
+  [ "$RUN_H2" = "1" ] && echo "h2:       ${H2_CONNS}c x ${H2_STREAMS}m (warm-up 5s)"
   echo "date:     $(date '+%Y-%m-%d %H:%M:%S %z')"
   echo "tester:   $(hostname 2>/dev/null || echo unknown)"
 } > "$OUT_DIR/meta.txt"
@@ -156,6 +182,21 @@ if [ "$RUN_API" = "1" ]; then
     > "$OUT_DIR/wrk-api.txt" 2>&1 || true
 fi
 
+# ---- 3b. optional warm-HTTP/2 static (h2load) -------------------------------
+# The wrk static/UI stages are HTTP/1.1 only, so they measure TLS with a fresh
+# handshake per connection and CANNOT show HTTP/2's win: many requests multiplexed
+# over ONE warm TLS connection, so the expensive handshake is amortized across
+# thousands of requests. This is the test behind the Layer-5 "TLS near-parity"
+# claim. --warm-up-time excludes the initial handshake burst from the numbers, so
+# what's left is steady-state h2 throughput. Enable with --h2 (https target only).
+if [ "$RUN_H2" = "1" ]; then
+  # h2load does not verify the cert chain — self-signed lab cert is accepted.
+  # -m streams multiplexed per -c connection; --duration ignores -n and runs by time.
+  h2load -t"${THREADS}" -c"${H2_CONNS}" -m"${H2_STREAMS}" \
+    --duration="${DURATION}" --warm-up-time=5 "${TARGET}/" \
+    > "$OUT_DIR/h2load-static.txt" 2>&1 || true
+fi
+
 # ---- 4. optional k6 user-journey (browser-accurate: static + API chain) -----
 # The only scenario that exercises the SPA's API calls the way a real browser
 # does: GET / -> GET /api/products -> GET /api/products/<real id from the list>.
@@ -187,6 +228,10 @@ UI_P99="$(grep -E '^\s*99%' "$OUT_DIR/wrk-ui.txt" 2>/dev/null | awk '{print $2}'
 # k6 journey: pull the http_req_duration p95 line if a k6 run happened.
 K6_P95="$(grep -E 'http_req_duration' "$OUT_DIR/k6-browse.txt" 2>/dev/null \
   | grep -oE 'p\(95\)=[0-9.]+m?s' | head -1)"
+# warm-H2: h2load prints "finished in <t>, <N> req/s, <B>/s" — pull the req/s.
+H2_RPS="$(grep -E 'finished in' "$OUT_DIR/h2load-static.txt" 2>/dev/null \
+  | grep -oE '[0-9.]+ req/s' | head -1)"
+H2_PROTO="$(grep -E '^Protocol:' "$OUT_DIR/h2load-static.txt" 2>/dev/null | awk '{print $2}' | head -1)"
 
 echo
 echo "==================== LOAD SUMMARY ===================="
@@ -198,6 +243,9 @@ printf "  %-16s %s\n" "Transfer/sec:"    "${XFER:-n/a}"
 printf "  %-16s %s\n" "Errors (static):" "$ERRS"
 printf "  %-16s %s\n" "RPS (UI mix):"    "${UI_RPS:-n/a}"
 printf "  %-16s %s\n" "p99 (UI mix):"    "${UI_P99:-n/a}"
+if [ "$RUN_H2" = "1" ]; then
+  printf "  %-16s %s\n" "RPS (warm h2):"  "${H2_RPS:-n/a (see h2load-static.txt)}${H2_PROTO:+  [$H2_PROTO, ${H2_CONNS}c x ${H2_STREAMS}m]}"
+fi
 if [ "$RUN_K6" = "1" ]; then
   printf "  %-16s %s\n" "k6 journey p95:" "${K6_P95:-n/a (see k6-browse.txt)}"
 fi
