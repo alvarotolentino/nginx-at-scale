@@ -47,11 +47,11 @@ H2_CONNS="400"     # HTTP/2 connections (one TLS handshake each — the amortize
 H2_STREAMS="100"   # max concurrent streams per connection (the multiplexing lever;
                    # keep <= nginx http2_max_concurrent_streams, default 128)
 H2_REQUESTS="3000000"  # total requests (count-based -n). We DON'T use h2load's
-                   # timing-based --duration: that mode has a result-aggregation bug
-                   # (prints "0 req/s / 0 requests" while traffic still flows). Count
-                   # mode reports req/s correctly, and a large -n amortizes the cold
-                   # handshakes across millions of requests, so the number is effectively
-                   # the warm/steady-state figure we want anyway.
+                   # timing-based --duration: on this build it was observed to print
+                   # "0 req/s / 0 requests" while traffic still flowed (broken summary
+                   # aggregation). Count mode reports req/s correctly, and a large -n
+                   # amortizes the cold handshakes across millions of requests, so the
+                   # number is effectively the warm/steady-state figure we want anyway.
 
 # ---- arg parsing ------------------------------------------------------------
 while [ $# -gt 0 ]; do
@@ -160,6 +160,22 @@ echo "Loading ${TARGET} as '${LABEL}' (tier ${TIER}) for ${DURATION}s (${THREADS
 wrk -t"${THREADS}" -c"${CONNS}" -d"${DURATION}s" --latency "${WRK_EXTRA[@]}" "${TARGET}/" \
   > "$OUT_DIR/wrk-static.txt" 2>&1 || true
 
+# ---- 1b. optional warm-HTTP/2 static (h2load) -------------------------------
+# The wrk stages are HTTP/1.1 only, so they measure TLS with many H1.1 connections
+# and CANNOT show HTTP/2's win: many requests multiplexed over FEW warm TLS
+# connections, so the handshake amortizes and HPACK compresses repeated headers.
+# This is the test behind the Layer-5 "TLS near-parity" claim. Enable with --h2
+# (https target only). Runs HERE — right after the static stage and before the UI
+# stage — so a monitor covering the wrk run also captures the h2 CPU window (it
+# used to run last, finishing after the sampler stopped → no target data for h2).
+if [ "$RUN_H2" = "1" ]; then
+  # h2load does not verify the cert chain — self-signed lab cert is accepted.
+  # Count-based (-n) not timing-based (--duration): see the H2_REQUESTS comment above
+  # for why. -m streams multiplexed per -c connection.
+  h2load -t"${THREADS}" -c"${H2_CONNS}" -m"${H2_STREAMS}" -n"${H2_REQUESTS}" "${TARGET}/" \
+    > "$OUT_DIR/h2load-static.txt" 2>&1 || true
+fi
+
 # ---- 2. wrk: UI browse (multiple real static paths) -------------------------
 # The headline metric for the "1B concurrent in nginx" goal: a browser-like mix
 # of the SPA routes (/, /product/<id>, /cart — all resolve to index.html via
@@ -188,21 +204,6 @@ UI_PATHS="$UI_PATHS" wrk -t"${THREADS}" -c"${CONNS}" -d"${DURATION}s" --latency 
 if [ "$RUN_API" = "1" ]; then
   wrk -t"${THREADS}" -c"${CONNS}" -d"${DURATION}s" --latency "${WRK_EXTRA[@]}" "${TARGET}/api/products" \
     > "$OUT_DIR/wrk-api.txt" 2>&1 || true
-fi
-
-# ---- 3b. optional warm-HTTP/2 static (h2load) -------------------------------
-# The wrk static/UI stages are HTTP/1.1 only, so they measure TLS with a fresh
-# handshake per connection and CANNOT show HTTP/2's win: many requests multiplexed
-# over ONE warm TLS connection, so the expensive handshake is amortized across
-# thousands of requests. This is the test behind the Layer-5 "TLS near-parity"
-# claim. --warm-up-time excludes the initial handshake burst from the numbers, so
-# what's left is steady-state h2 throughput. Enable with --h2 (https target only).
-if [ "$RUN_H2" = "1" ]; then
-  # h2load does not verify the cert chain — self-signed lab cert is accepted.
-  # Count-based (-n) not timing-based (--duration): see the H2_REQUESTS comment above
-  # for why. -m streams multiplexed per -c connection.
-  h2load -t"${THREADS}" -c"${H2_CONNS}" -m"${H2_STREAMS}" -n"${H2_REQUESTS}" "${TARGET}/" \
-    > "$OUT_DIR/h2load-static.txt" 2>&1 || true
 fi
 
 # ---- 4. optional k6 user-journey (browser-accurate: static + API chain) -----
@@ -261,8 +262,17 @@ if [ "$RUN_K6" = "1" ]; then
 fi
 printf "  %-16s %s\n" "Output:"          "$OUT_DIR"
 echo
+# Suggested monitor duration = sum of the load stages that actually run, + buffer.
+# Every enabled wrk/h2 stage runs back-to-back, so a monitor that only covers one
+# stage misses the rest (this bit us on layer-5: h2 finished after the sampler
+# stopped). h2 is count-based so its runtime varies — budget one DURATION for it.
+MON_STAGES=2                                   # wrk static + wrk UI (always)
+[ "$RUN_H2" = "1" ]  && MON_STAGES=$((MON_STAGES + 1))
+[ "$RUN_API" = "1" ] && MON_STAGES=$((MON_STAGES + 1))
+MON_EST=$((DURATION * MON_STAGES + 20))        # +20s: asset/id discovery curls + h2 variance
 echo "  Pair with the target-side sampler for the same label (run DURING the load):"
-echo "    # on target: scripts/monitor.sh --label ${LABEL} --tier ${TIER} --duration $((DURATION + 10))"
+echo "    # on target: scripts/monitor.sh --label ${LABEL} --tier ${TIER} --duration ${MON_EST}"
+[ "$RUN_K6" = "1" ] && echo "    # (k6 runs its own multi-minute stages on top — extend --duration if you need it sampled)"
 echo
 echo "  Copy results back to the target, then build the report there:"
 echo "    scp -r ${OUT_DIR} target:<repo>/results/tier-${TIER}/${LABEL}/"
