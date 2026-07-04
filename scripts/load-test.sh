@@ -43,8 +43,15 @@ RUN_H2="0"    # warm-HTTP/2 (h2load) static test; off by default. See --h2 below
 # NOT wrk's thousands of HTTP/1.1 connections. These have their own knobs so the
 # h2 stage doesn't inherit --conns (4000 conns x 100 streams = 400k streams would
 # swamp the server and measure nothing useful).
-H2_CONNS="100"     # HTTP/2 connections (one TLS handshake each — the amortized cost)
-H2_STREAMS="100"   # max concurrent streams per connection (the multiplexing lever)
+H2_CONNS="400"     # HTTP/2 connections (one TLS handshake each — the amortized cost)
+H2_STREAMS="100"   # max concurrent streams per connection (the multiplexing lever;
+                   # keep <= nginx http2_max_concurrent_streams, default 128)
+H2_REQUESTS="3000000"  # total requests (count-based -n). We DON'T use h2load's
+                   # timing-based --duration: that mode has a result-aggregation bug
+                   # (prints "0 req/s / 0 requests" while traffic still flows). Count
+                   # mode reports req/s correctly, and a large -n amortizes the cold
+                   # handshakes across millions of requests, so the number is effectively
+                   # the warm/steady-state figure we want anyway.
 
 # ---- arg parsing ------------------------------------------------------------
 while [ $# -gt 0 ]; do
@@ -58,9 +65,10 @@ while [ $# -gt 0 ]; do
     --profile)    PROFILE="$2"; shift 2 ;;
     --k6)         RUN_K6="1"; shift 1 ;;
     --api)        RUN_API="1"; shift 1 ;;
-    --h2)         RUN_H2="1"; shift 1 ;;
-    --h2-conns)   H2_CONNS="$2"; shift 2 ;;
-    --h2-streams) H2_STREAMS="$2"; shift 2 ;;
+    --h2)           RUN_H2="1"; shift 1 ;;
+    --h2-conns)     H2_CONNS="$2"; shift 2 ;;
+    --h2-streams)   H2_STREAMS="$2"; shift 2 ;;
+    --h2-requests)  H2_REQUESTS="$2"; shift 2 ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
@@ -140,7 +148,7 @@ echo "Loading ${TARGET} as '${LABEL}' (tier ${TIER}) for ${DURATION}s (${THREADS
   echo "threads:  $THREADS"
   echo "conns:    $CONNS"
   echo "profile:  $PROFILE"
-  [ "$RUN_H2" = "1" ] && echo "h2:       ${H2_CONNS}c x ${H2_STREAMS}m (warm-up 5s)"
+  [ "$RUN_H2" = "1" ] && echo "h2:       ${H2_CONNS}c x ${H2_STREAMS}m, -n ${H2_REQUESTS} (count mode)"
   echo "date:     $(date '+%Y-%m-%d %H:%M:%S %z')"
   echo "tester:   $(hostname 2>/dev/null || echo unknown)"
 } > "$OUT_DIR/meta.txt"
@@ -191,9 +199,9 @@ fi
 # what's left is steady-state h2 throughput. Enable with --h2 (https target only).
 if [ "$RUN_H2" = "1" ]; then
   # h2load does not verify the cert chain — self-signed lab cert is accepted.
-  # -m streams multiplexed per -c connection; --duration ignores -n and runs by time.
-  h2load -t"${THREADS}" -c"${H2_CONNS}" -m"${H2_STREAMS}" \
-    --duration="${DURATION}" --warm-up-time=5 "${TARGET}/" \
+  # Count-based (-n) not timing-based (--duration): see the H2_REQUESTS comment above
+  # for why. -m streams multiplexed per -c connection.
+  h2load -t"${THREADS}" -c"${H2_CONNS}" -m"${H2_STREAMS}" -n"${H2_REQUESTS}" "${TARGET}/" \
     > "$OUT_DIR/h2load-static.txt" 2>&1 || true
 fi
 
@@ -231,7 +239,9 @@ K6_P95="$(grep -E 'http_req_duration' "$OUT_DIR/k6-browse.txt" 2>/dev/null \
 # warm-H2: h2load prints "finished in <t>, <N> req/s, <B>/s" — pull the req/s.
 H2_RPS="$(grep -E 'finished in' "$OUT_DIR/h2load-static.txt" 2>/dev/null \
   | grep -oE '[0-9.]+ req/s' | head -1)"
-H2_PROTO="$(grep -E '^Protocol:' "$OUT_DIR/h2load-static.txt" 2>/dev/null | awk '{print $2}' | head -1)"
+# Confirm the negotiated app protocol really was h2 (h2load labels it
+# "Application protocol: h2"); guards against a silent HTTP/1.1 fallback.
+H2_PROTO="$(grep -iE 'Application protocol:' "$OUT_DIR/h2load-static.txt" 2>/dev/null | awk '{print $NF}' | head -1)"
 
 echo
 echo "==================== LOAD SUMMARY ===================="
