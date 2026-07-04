@@ -74,7 +74,11 @@ nft list ruleset                           # only 22/80/443 exposed
 The tester needs only the load generators (no nginx, no Rust, no app):
 
 ```bash
-sudo apt-get update && sudo apt-get install -y git build-essential curl
+# build deps: unzip (wrk/wrk2 vendor LuaJIT, extracted with unzip),
+# libssl-dev (wrk/wrk2 link OpenSSL for HTTPS), zlib1g-dev (wrk2 hdr_histogram needs zlib.h),
+# ca-certificates + gnupg2 (k6 apt repo)
+sudo apt-get update && sudo apt-get install -y \
+  git build-essential curl unzip libssl-dev zlib1g-dev ca-certificates gnupg2
 
 # wrk (build from source)
 git clone https://github.com/wg/wrk.git /tmp/wrk
@@ -84,9 +88,11 @@ make -C /tmp/wrk -j"$(nproc)" && sudo cp /tmp/wrk/wrk /usr/local/bin/
 git clone https://github.com/giltene/wrk2.git /tmp/wrk2
 make -C /tmp/wrk2 -j"$(nproc)" && sudo cp /tmp/wrk2/wrk /usr/local/bin/wrk2
 
-# k6 (Grafana apt repo)
-sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
-  --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+# k6 (Grafana apt repo — key fetched over HTTPS, no keyserver/dirmngr needed)
+curl -fsSL https://dl.k6.io/key.gpg \
+  | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
+# Debian 13/trixie verifies apt sigs with sqv as the _apt user; keyring must be world-readable
+sudo chmod 0644 /usr/share/keyrings/k6-archive-keyring.gpg
 echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
   | sudo tee /etc/apt/sources.list.d/k6.list
 sudo apt-get update && sudo apt-get install -y k6
