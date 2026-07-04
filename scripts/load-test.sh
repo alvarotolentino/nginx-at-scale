@@ -78,6 +78,26 @@ if ! command -v wrk >/dev/null 2>&1; then
   exit 1
 fi
 
+# ---- tester FD limit ----------------------------------------------------------
+# The tester needs one FD per wrk connection (plus threads and script/file
+# overhead). The default soft limit of 1024 silently caps high-connection
+# profiles: wrk reports thousands of 'connect' socket errors and the UI stage
+# can fail outright with 'Too many open files'. Raise the soft limit up to the
+# hard limit — no root needed; abort if the hard limit itself is too low.
+FD_REQUIRED=$((CONNS + THREADS + 256))
+FD_SOFT="$(ulimit -Sn)"
+FD_HARD="$(ulimit -Hn)"
+if [ "$FD_SOFT" != "unlimited" ] && [ "$FD_SOFT" -lt "$FD_REQUIRED" ]; then
+  if [ "$FD_HARD" = "unlimited" ] || [ "$FD_HARD" -ge "$FD_REQUIRED" ]; then
+    ulimit -Sn "$FD_REQUIRED"
+    echo "Raised tester nofile soft limit ${FD_SOFT} -> ${FD_REQUIRED} (hard: ${FD_HARD})"
+  else
+    echo "ERROR: tester hard nofile limit ${FD_HARD} < required ${FD_REQUIRED} for ${CONNS} connections." >&2
+    echo "Raise it on the tester (e.g. /etc/security/limits.d/) and re-login, or lower --conns." >&2
+    exit 1
+  fi
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
