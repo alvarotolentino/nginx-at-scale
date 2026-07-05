@@ -23,23 +23,18 @@ if [ ! -f /etc/nginx/certs/nginx.crt ]; then
   chmod 600 /etc/nginx/certs/nginx.key
 fi
 
-# The config uses `aio threads` (thread-pool AIO), which needs nginx built
-# --with-threads — a COMPILE flag, not a runtime lib. Verify it up front so we fail
-# with a clear message instead of a cryptic `nginx -t` error. (Native `aio on` would
-# instead need --with-file-aio + libaio; the config comment explains switching back.)
+# The aio/directio block in layer-06-aio.conf is OPT-IN (commented out): on T1 it
+# regressed throughput ~21% (small cached TLS-served files gain nothing from async
+# I/O — see the config comment). So by default this layer == Layer 5 + a documented
+# opt-in. We therefore only WARN about the capabilities needed to enable it, rather
+# than blocking. `aio threads` needs --with-threads; native `aio on` needs
+# --with-file-aio + libaio at runtime.
 if ! nginx -V 2>&1 | tr ' ' '\n' | grep -q -- '--with-threads'; then
-  echo "ERROR: this nginx is not built --with-threads, so 'aio threads' won't load." >&2
-  echo "  Fix: rebuild nginx with --with-threads (and --with-file-aio for native 'aio on')," >&2
-  echo "  or edit nginx/sections/layer-06-aio.conf to remove the aio/directio block (Layer 6 == Layer 5)." >&2
-  exit 1
+  log_warn "nginx not built --with-threads — the opt-in 'aio threads' block won't load if you enable it."
 fi
-# If you switch the config back to native `aio on`, nginx also needs libaio at
-# runtime — install libaio-dev (pulls the right libaio1/libaio1t64 for the release).
 if nginx -V 2>&1 | tr ' ' '\n' | grep -q -- '--with-file-aio' \
    && ! ldconfig -p | grep -q 'libaio\.so'; then
-  log_step "libaio not found — installing (needed only if you use native 'aio on')"
-  apt-get update -qq && apt-get install -y libaio-dev \
-    || log_warn "libaio install failed; native 'aio on' may not load"
+  log_warn "native 'aio on' is available but libaio is not installed — 'apt-get install libaio-dev' if you enable it."
 fi
 
 # Install the AIO config (TLS + aio/directio on the static location).
