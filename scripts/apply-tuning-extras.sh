@@ -24,9 +24,11 @@ source "$SCRIPT_DIR/_lib.sh"
 
 ACCESS_LOG_MODE="buffer"   # buffer | off
 REVERT=0
+KTLS=0                     # --ktls: enable kernel TLS offload (crypto + sendfile in-kernel)
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-access-log) ACCESS_LOG_MODE="off"; shift 1 ;;
+    --ktls)          KTLS=1; shift 1 ;;
     --revert)        REVERT=1; shift 1 ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
@@ -95,11 +97,14 @@ BAK="${CONF}.pre-tuning.$(date +%s)"
 cp -a "$CONF" "$BAK"
 
 HAS_OFC="$(grep -c 'open_file_cache ' "$CONF" || true)"
+HAS_KTLS="$(grep -ci 'ssl_conf_command Options KTLS' "$CONF" || true)"
+HAS_SSL="$(grep -c 'ssl_certificate ' "$CONF" || true)"
 TMP="$(mktemp)"
-awk -v almode="$ACCESS_LOG_MODE" -v has_ofc="$HAS_OFC" '
+awk -v almode="$ACCESS_LOG_MODE" -v has_ofc="$HAS_OFC" \
+    -v ktls="$KTLS" -v has_ktls="$HAS_KTLS" -v has_ssl="$HAS_SSL" '
   # Replace the (single, http-context) access_log line, keeping its indentation,
   # and append open_file_cache right after it if the config does not already have it.
-  /^[[:space:]]*access_log[[:space:]]/ && added != 1 {
+  /^[[:space:]]*access_log[[:space:]]/ && al_done != 1 {
     match($0, /^[[:space:]]*/); ind = substr($0, 1, RLENGTH)
     if (almode == "off")
       print ind "access_log off;   # tuning-extras: logging disabled for max throughput"
@@ -112,7 +117,16 @@ awk -v almode="$ACCESS_LOG_MODE" -v has_ofc="$HAS_OFC" '
       print ind "open_file_cache_min_uses 2;"
       print ind "open_file_cache_errors on;"
     }
-    added = 1
+    al_done = 1
+    next
+  }
+  # kTLS: inject after the ssl_protocols line (http-context, only in TLS configs).
+  # sendfile is already on in these configs, so kTLS also offloads TX via sendfile.
+  /^[[:space:]]*ssl_protocols[[:space:]]/ && ktls + 0 == 1 && has_ktls + 0 == 0 && has_ssl + 0 > 0 && ktls_done != 1 {
+    print
+    match($0, /^[[:space:]]*/); ind = substr($0, 1, RLENGTH)
+    print ind "ssl_conf_command Options KTLS;   # tuning-extras: kernel TLS offload (crypto + sendfile in-kernel)"
+    ktls_done = 1
     next
   }
   { print }
@@ -126,6 +140,15 @@ else
   log_ok "access_log: buffered (buffer=256k flush=5s)"
 fi
 [ "$HAS_OFC" -eq 0 ] && log_ok "open_file_cache: added (max=10000)" || log_ok "open_file_cache: already present — left as-is"
+if [ "$KTLS" = "1" ]; then
+  if [ "$HAS_SSL" -eq 0 ]; then
+    log_warn "kTLS requested but no ssl_certificate in the config (non-TLS layer) — skipped."
+  elif [ "$HAS_KTLS" -gt 0 ]; then
+    log_ok "kTLS: already enabled — left as-is"
+  else
+    log_ok "kTLS: enabled (ssl_conf_command Options KTLS)"
+  fi
+fi
 
 # ---- validate + reload ------------------------------------------------------
 if ! nginx -t; then
@@ -135,4 +158,10 @@ if ! nginx -t; then
 fi
 nginx_reload
 log_ok "Tuning extras applied. Backup: $BAK"
+if [ "$KTLS" = "1" ] && [ "$HAS_SSL" -gt 0 ]; then
+  log_ok "Verify kTLS is actually offloading (needs OpenSSL built enable-ktls + CONFIG_TLS):"
+  log_ok "  ss -ti state established '( sport = :443 )' | grep -o 'tls' | head -1   # 'tls' => kernel TLS active"
+  log_ok "  or: strace -f -e trace=sendfile,setsockopt -p \$(pidof nginx|awk '{print \$1}') 2>&1 | grep -m3 -iE 'sendfile|SOL_TLS'"
+  log_ok "  If neither shows kTLS, OpenSSL wasn't built with enable-ktls — the option is a silent no-op then."
+fi
 log_ok "Re-run the load test and compare against the pre-tuning numbers (static ~290k / warm-h2 ~348k)."
