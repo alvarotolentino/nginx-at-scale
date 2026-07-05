@@ -77,21 +77,38 @@ else
   log_warn "RSS unavailable (driver has no multiqueue) — using RPS to compensate"
 fi
 
-# ---- 2. RPS: spread RX softirq across all CPUs ------------------------------
-for q in /sys/class/net/"$IFACE"/queues/rx-*; do
-  echo "$MASK" > "$q/rps_cpus"
-done
-log_ok "RPS: rps_cpus=$MASK on $RXQ RX queue(s) — RX softirq now spreads over $CPUS cores"
+# ---- 2+3. RPS/RFS: ONLY on single-queue NICs --------------------------------
+# RPS is the SOFTWARE emulation of hardware RSS. On a multi-queue NIC the hardware
+# already steers each flow to its own RX queue/core, so layering RPS on top is
+# redundant and actively harmful: it re-dispatches packets across cores in software,
+# adding IPIs and cache-line bouncing. Measured on T1 (12-queue 10GbE): applying RPS
+# raised softirq ~22%→27% and cost the low-connection h2 test ~6%. So only enable
+# RPS/RFS when there is exactly ONE hardware RX queue (no RSS to lean on); otherwise
+# clear any stale mask and let hardware RSS do its job.
+if [ "$RXQ" -le 1 ]; then
+  for q in /sys/class/net/"$IFACE"/queues/rx-*; do
+    echo "$MASK" > "$q/rps_cpus"
+  done
+  log_ok "RPS: single-queue NIC — rps_cpus=$MASK, RX softirq now spreads over $CPUS cores"
 
-# ---- 3. RFS: keep each flow on the core servicing its socket (cache locality) --
-# Global table sized to a power of two; per-queue budget is the table / #queues.
-RFS_TOTAL=32768
-sysctl_set net.core.rps_sock_flow_entries "$RFS_TOTAL"
-PERQ=$(( RFS_TOTAL / (RXQ > 0 ? RXQ : 1) ))
-for q in /sys/class/net/"$IFACE"/queues/rx-*; do
-  echo "$PERQ" > "$q/rps_flow_cnt"
-done
-log_ok "RFS: rps_sock_flow_entries=$RFS_TOTAL, rps_flow_cnt=$PERQ/queue"
+  # RFS keeps each flow on the core running its socket (cache locality). Works through
+  # the RPS path, so it's only meaningful when RPS is active (single-queue).
+  RFS_TOTAL=32768
+  sysctl_set net.core.rps_sock_flow_entries "$RFS_TOTAL"
+  PERQ=$(( RFS_TOTAL / (RXQ > 0 ? RXQ : 1) ))
+  for q in /sys/class/net/"$IFACE"/queues/rx-*; do
+    echo "$PERQ" > "$q/rps_flow_cnt"
+  done
+  log_ok "RFS: rps_sock_flow_entries=$RFS_TOTAL, rps_flow_cnt=$PERQ/queue"
+else
+  # Multi-queue: hardware RSS handles steering. Clear any RPS/RFS a prior run set.
+  for q in /sys/class/net/"$IFACE"/queues/rx-*; do
+    echo 0 > "$q/rps_cpus"      2>/dev/null || true
+    echo 0 > "$q/rps_flow_cnt"  2>/dev/null || true
+  done
+  log_ok "RSS: $IFACE has $RXQ hardware RX queues — skipping RPS/RFS (would only add softirq/IPI overhead)."
+  log_ok "  For flow-to-core locality on multi-queue, enable hardware aRFS instead: ethtool -K $IFACE ntuple on"
+fi
 
 # ---- 4. XPS: spread TX completion softirq across CPUs -----------------------
 # Best-effort: some drivers (e.g. r8169) expose xps_cpus but reject writes. XPS is
