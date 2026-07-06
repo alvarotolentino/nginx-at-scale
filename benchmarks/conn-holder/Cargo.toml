@@ -1,0 +1,29 @@
+[package]
+name = "conn-holder"
+version = "0.1.0"
+edition = "2021"
+description = "Connection-concurrency benchmark: opens and HOLDS N keepalive connections to measure a server's concurrent-connection ceiling (not RPS)."
+license = "MIT"
+authors = ["Alvaro Tolentino <alvarotolentinou@gmail.com>"]
+
+[[bin]]
+name = "conn-holder"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "macros", "signal", "io-util"] }
+clap = { version = "4", features = ["derive"] }
+# rustls with the `ring` provider — builds with just a C compiler (no cmake, unlike
+# aws-lc-rs), which keeps the tester provisioning light on Debian bare metal.
+rustls = { version = "0.23", default-features = false, features = ["ring", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+anyhow = "1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+# NOTE: no `panic = "abort"` on purpose — a single connection task panicking must
+# not tear down the whole run and lose the summary; tokio isolates task panics only
+# when unwinding is available.
