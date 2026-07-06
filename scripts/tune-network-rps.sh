@@ -101,13 +101,34 @@ if [ "$RXQ" -le 1 ]; then
   done
   log_ok "RFS: rps_sock_flow_entries=$RFS_TOTAL, rps_flow_cnt=$PERQ/queue"
 else
-  # Multi-queue: hardware RSS handles steering. Clear any RPS/RFS a prior run set.
+  # Multi-queue: hardware RSS steers packets per-core, so DON'T add software RPS
+  # (rps_cpus) — it's redundant and adds IPIs/cache-bouncing. But RSS hashes a flow
+  # to a queue/core independently of which core nginx pinned that flow's worker to
+  # (Layer 7). When they disagree, every packet bounces cache lines cross-core —
+  # MEASURED: static -42% (522k->302k). aRFS fixes it: NIC ntuple filters steer each
+  # flow to the core running its worker. MEASURED: static recovered 302k->545k while
+  # h2 kept its gain (~837k). aRFS uses the rps_flow_cnt table + hardware ntuple,
+  # WITHOUT rps_cpus. Enable it by default on multi-queue — beneficial with pinned
+  # workers, harmless without.
   for q in /sys/class/net/"$IFACE"/queues/rx-*; do
-    echo 0 > "$q/rps_cpus"      2>/dev/null || true
-    echo 0 > "$q/rps_flow_cnt"  2>/dev/null || true
+    echo 0 > "$q/rps_cpus" 2>/dev/null || true       # no software RPS on multi-queue
   done
-  log_ok "RSS: $IFACE has $RXQ hardware RX queues — skipping RPS/RFS (would only add softirq/IPI overhead)."
-  log_ok "  For flow-to-core locality on multi-queue, enable hardware aRFS instead: ethtool -K $IFACE ntuple on"
+  if ethtool -K "$IFACE" ntuple on 2>/dev/null; then
+    RFS_TOTAL=32768
+    sysctl_set net.core.rps_sock_flow_entries "$RFS_TOTAL"
+    PERQ=$(( RFS_TOTAL / (RXQ > 0 ? RXQ : 1) ))
+    for q in /sys/class/net/"$IFACE"/queues/rx-*; do
+      echo "$PERQ" > "$q/rps_flow_cnt" 2>/dev/null || true
+    done
+    log_ok "aRFS: ntuple on + rps_flow_cnt=${PERQ}/queue on ${RXQ} queues — flow steered to its worker's core"
+    log_ok "RSS: ${RXQ} hardware RX queues; software RPS left off (aRFS handles locality)."
+  else
+    for q in /sys/class/net/"$IFACE"/queues/rx-*; do
+      echo 0 > "$q/rps_flow_cnt" 2>/dev/null || true
+    done
+    log_warn "aRFS unavailable (ethtool -K $IFACE ntuple on failed) — relying on plain RSS."
+    log_warn "  If nginx workers are CPU-pinned (Layer 7), expect cross-core bouncing on high-pps workloads."
+  fi
 fi
 
 # ---- 4. XPS: spread TX completion softirq across CPUs -----------------------
