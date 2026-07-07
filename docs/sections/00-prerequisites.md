@@ -76,9 +76,11 @@ The tester needs only the load generators (no nginx, no Rust, no app):
 ```bash
 # build deps: unzip (wrk/wrk2 vendor LuaJIT, extracted with unzip),
 # libssl-dev (wrk/wrk2 link OpenSSL for HTTPS), zlib1g-dev (wrk2 hdr_histogram needs zlib.h),
-# ca-certificates + gnupg2 (k6 apt repo)
+# ca-certificates + gnupg2 (k6 apt repo),
+# nghttp2-client (provides h2load — the warm-HTTP/2 test for load-test.sh --h2;
+#   needs nghttp2 >= 1.26 for --duration/--warm-up-time, present on Debian 12/13)
 sudo apt-get update && sudo apt-get install -y \
-  git build-essential curl unzip libssl-dev zlib1g-dev ca-certificates gnupg2
+  git build-essential curl unzip libssl-dev zlib1g-dev ca-certificates gnupg2 nghttp2-client
 
 # wrk (build from source)
 git clone https://github.com/wg/wrk.git /tmp/wrk

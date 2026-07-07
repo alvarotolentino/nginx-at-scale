@@ -63,3 +63,41 @@ sysctl_set() {
     echo "${key} = ${value}" >> "$PERF_SYSCTL_FILE"
   fi
 }
+
+# Systemd unit that re-pins the CPU governor on every boot (sysfs governor resets).
+CPU_GOVERNOR_UNIT="/etc/systemd/system/nginx-cpu-governor.service"
+
+# set_cpu_governor_performance
+# Force every core's cpufreq governor to `performance` (max clock under load) and
+# persist it across reboots via a systemd oneshot. This is part of the base host
+# tuning applied at Layer 1 — the original layer sweep ran on a demand governor with
+# the cores DOWNCLOCKED, so every "100% CPU" number was 100% of a throttled clock;
+# forcing max frequency was a large share of the measured ~2x throughput gain.
+# Idempotent: safe to re-run. Logs its own result.
+set_cpu_governor_performance() {
+  local g gov_set=0
+  for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+    [ -w "$g" ] || continue
+    if echo performance > "$g" 2>/dev/null; then gov_set=$(( gov_set + 1 )); fi
+  done
+  if [ "$gov_set" -eq 0 ]; then
+    log_warn "No writable cpufreq governor — check scaling_driver (amd-pstate/acpi-cpufreq) / BIOS P-states."
+    return 0
+  fi
+  cat > "$CPU_GOVERNOR_UNIT" <<'EOF'
+[Unit]
+Description=Pin CPU governor to performance for high-throughput nginx
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > "$g" 2>/dev/null || true; done'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable nginx-cpu-governor.service >/dev/null 2>&1 || true
+  log_ok "CPU governor = performance on ${gov_set} cores (persisted via nginx-cpu-governor.service)"
+}

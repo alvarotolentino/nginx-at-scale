@@ -108,4 +108,28 @@ ss -lnt | grep ':80'        # one listen socket per worker with reuseport
 - Lower tail latency from `accept_mutex off` + per-worker sockets (no accept serialization).
 - Flat CPU on static delivery thanks to `sendfile` + `gzip_static`.
 
+> **Measured on T1 over a sub-ms LAN (2026-07-04) — read the RPS number with care.** The
+> event model did exactly its job, but a **payload confound** hides it in the headline RPS:
+>
+> - **Event-model wins (unambiguous):** `listen_drops_total` 1776 → **0**, `tcp_timewait_peak`
+>   9061 → **0**, static latency **max 596 ms → 39 ms**, stdev 10.5 ms → **1.01 ms**,
+>   `Req/Sec` stdev 1830 → **577**. reuseport + `backlog=65535` cleared the accept-queue
+>   overflow, and per-worker sockets spread load **perfectly evenly across all cores** —
+>   near-zero jitter. This is the real result of the layer.
+> - **Static RPS *dropped* 467,522 → 384,658 (-18%) — and that is the header tax, not the
+>   event model.** This is the first layer to load the full `nginx.conf`, which adds the
+>   five security `add_header` lines (CSP, Permissions-Policy, X-Content-Type-Options,
+>   Referrer-Policy, X-Frame-Options). Those add **≈370 bytes to every response** — measured
+>   `/` grew 1040 → 1414 bytes/req. The static test is **CPU-bound at 100 %** (nginx 1206 %,
+>   all cores), so at the ceiling the box serves *either* 467k tiny responses *or* 385k
+>   slightly-bigger ones for the same CPU — more bytes + header assembly per request means
+>   fewer requests. reuseport did not slow anything down.
+> - **Watch for the confound in RPS/core.** Layers 1–2 ran the bare baseline conf (no
+>   security headers); layer 3 onward carries the ~370-byte offset. So RPS across the stack
+>   is **not** measured on a constant response size. When comparing RPS/core layer-to-layer,
+>   normalize for bytes/req (or move the headers to [Section 15](15-security.md) and measure
+>   the event model clean). Latency, drops, and TIME_WAIT are the honest layer-3 signals.
+> - **UI mix:** 176.7k → 167.7k RPS, still pinned at 9.84 Gbps (one-NIC line rate) — NIC-bound,
+>   not an event-model limit.
+
 Next: [Layer 4 — Memory Allocator (jemalloc)](layer-04-jemalloc.md).

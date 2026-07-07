@@ -48,6 +48,23 @@ A non-empty line means the jemalloc `.so` is mapped into the Nginx process.
 - Reduced p99 latency under sustained concurrency (no arena-lock stalls).
 - Lower, flatter RSS over time (extent decay returns memory to the OS).
 
+> **Measured on T1 over a sub-ms LAN (2026-07-04) — this is a memory layer, not a
+> throughput layer.** Same nginx.conf/response size as Layer 3, so the comparison is clean:
+> - **nginx RSS peak 5223 MB → 2007 MB (-61 %).** The headline result. jemalloc's
+>   size-class bins + extent decay cut heap fragmentation across the 12 workers and hand
+>   memory back to the OS. On the RPS-per-dollar thesis this is what matters — same work,
+>   ~3.2 GB reclaimed, so the box could pack more or drop to a smaller SKU.
+> - **Static RPS 384,658 → 388,867 (+1.1 %, within noise).** Expected: static file serving
+>   does almost no per-request allocation, so there is little malloc pressure to relieve.
+>   The allocator win shows up as **footprint**, not throughput. Static is still CPU-bound
+>   at 100 % (nginx ~1200 %).
+> - **Tail latency marginally tighter:** p99 13.27 → 12.43 ms, max 39 → 30 ms, stdev
+>   1.01 → 0.99 ms — consistent with fewer arena-lock stalls, small on this workload.
+> - **UI mix unchanged** (167.7k RPS, tx pinned 9.84 Gbps) — a bandwidth wall the allocator
+>   cannot move.
+> - **Report it on RSS, not RPS.** Track nginx RSS as the Layer 4 metric; the RPS/core
+>   number is flat by design here.
+
 ## Note on tcmalloc
 
 tcmalloc is intentionally **excluded** from this guide. It leans on glibc internals and

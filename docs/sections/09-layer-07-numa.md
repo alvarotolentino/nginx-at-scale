@@ -84,4 +84,54 @@ numastat -p $(pidof nginx | awk '{print $1}')        # watch for low "other_node
   to keep local. The CPU pin still prevents migration churn but the win is small. This is
   expected; the layer is documented as bare-metal-focused.
 
+> **Measured on T1 (2026-07-05) — confirmed no-op / slight regression, as predicted.**
+> `lscpu` confirmed **1 NUMA node** (CPUs 0–11), so there is nothing to keep local.
+>
+> | Test | Layer 5 | Layer 7 | Δ |
+> |---|---|---|---|
+> | wrk static (H1.1+TLS) | 290,200 | 287,824 | flat (noise) |
+> | h2load (warm H2)      | 347,732 | 327,324 | **-6 %** |
+>
+> - **Static is flat; the h2 test lost ~6 %.** Two single-NUMA effects, both net-negative
+>   here:
+>   1. **`worker_cpu_affinity` 1:1 pinning hurts the low-connection case.** With reuseport,
+>      h2's 400 connections hash to ~33/worker; pinning each worker to a fixed core means an
+>      unlucky-heavy worker can't be migrated to an idle one. wrk's 4000 conns average the
+>      imbalance out (static flat); 400 conns expose it (h2 -6 %). With one NUMA node there's
+>      no locality gain to offset the lost scheduler flexibility.
+>   2. **RPS/RFS was redundant on the 12-queue NIC.** `eno1` has **12 hardware RX queues**
+>      (RSS already steers per-core). The old `tune-network-rps.sh` applied software RPS on
+>      top unconditionally, which only adds IPIs + cache bouncing — softirq rose 22 %→27 %.
+>      The script now **gates RPS/RFS to single-queue NICs** and skips them here (multi-queue
+>      → leave hardware RSS alone; enable hardware aRFS via `ethtool -K eno1 ntuple on` if you
+>      want flow-to-core locality).
+> - **Takeaway (untuned):** like Layer 6, this looked like a **wrong-hardware** layer for T1.
+>   But see below — with the base tuning applied it becomes load-bearing once paired with aRFS.
+
+> **With base tuning + aRFS, Layer 7 becomes the OPTIMAL config (2026-07-05).** The base
+> tuning is now folded into the layers themselves — CPU governor at [Layer 1](03-layer-01-fd.md),
+> buffered `access_log` + `open_file_cache` in the L3+ nginx configs, and aRFS at
+> [Layer 2](04-layer-02-tcp.md) — so by the time you reach Layer 7 everything but the pin is
+> already active. With that base roughly doubling the baseline, worker pinning first *hurt*
+> and then *won*:
+>
+> | Config (all tuned) | wrk static | h2load |
+> |---|---|---|
+> | no pinning (layer-5/6-tuned) | 522,475 | 709,877 |
+> | + pinning, **no** aRFS | 302,217 (**-42%**) | 844,790 (+19%) |
+> | + pinning **+ aRFS** | **545,529** | **836,843** |
+>
+> - **Pinning without aRFS wrecks static (-42%).** The 12-queue NIC's RSS hashes a flow to a
+>   queue/core independently of the core nginx pinned that flow's worker to. When they
+>   disagree, every packet bounces cache lines cross-core — savage at 4000-conn/high-pps
+>   static, mild at 400-conn h2 (which even benefits from the pin's cache locality, +19%).
+> - **aRFS realigns them.** `ethtool -K eno1 ntuple on` programs NIC filters to steer each
+>   flow to its worker's core. Static recovered **302k → 545k** (and edged past the no-pin
+>   522k) while h2 kept ~837k. Best latency too (static p50 6.98 ms). `tune-network-rps.sh`
+>   enables aRFS by default on multi-queue NICs, and now runs at **Layer 2** — so aRFS is
+>   already active by the time you pin here; Layer 7 supplies only the worker pin it needs.
+> - **Optimal T1 config = base tuning + Layer-7 pinning + aRFS:** static **545,529**
+>   (91k rps/core), h2 **836,843** (139k rps/core) — vs the raw pre-tuning layer-5 (290k/348k),
+>   i.e. **+88% / +140%**. Pin workers ONLY with aRFS on; without it, don't pin.
+
 Next: [Layer 8 — DPDK & Kernel Bypass](layer-08-dpdk.md).

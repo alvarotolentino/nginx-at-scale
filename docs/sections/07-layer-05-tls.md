@@ -114,4 +114,43 @@ openssl s_client -connect localhost:443 -reconnect </dev/null 2>&1 | grep -i reu
   *cold* connections, near-parity on warm/resumed ones.
 - A+ on SSL Labs (with a real cert): TLS 1.2/1.3 only, AEAD + ECDHE, HSTS preload, stapling.
 
+> **Measured on T1 over a sub-ms LAN (2026-07-04) — protocol matters, and you must test
+> HTTP/2 to see it.** Same `/` response as Layers 3–4.
+>
+> | Test | Protocol | RPS | vs plaintext (Layer 4 = 388,867) |
+> |---|---|---|---|
+> | wrk static | HTTP/1.1 + TLS, keepalive | 290,120 | **-25.4 %** |
+> | h2load static | **HTTP/2 + TLS, warm** | **348,787** | **-10.3 %** |
+>
+> - **Warm HTTP/2 recovers ~60 % of the TLS penalty** (gap shrinks -99k → -40k vs
+>   plaintext). The "near-parity" claim is **directionally right, not literal** — HTTP/2
+>   claws most of it back but a residual remains.
+> - **wrk cannot show this — it is HTTP/1.1 only.** The wrk static number (290k) is the
+>   *worst case*: TLS over many HTTP/1.1 connections. To measure the layer's actual thesis
+>   you need a warm HTTP/2 client — here `h2load` (`load-test.sh --h2`).
+> - **Why H2 wins** (from h2load's traffic counters): **HPACK header compression** reports
+>   `space savings 25.50 %` — the ~370-byte security-header block (added in Layer 3) repeats
+>   every response, and HPACK compresses it across requests, so there are **fewer bytes to
+>   AES-encrypt per response.** Same bandwidth as wrk (~421 vs ~411 MB/s) but more requests
+>   packed into it. Plus **400 warm connections vs wrk's 4000** = 10× fewer handshakes and
+>   far less per-connection TLS state; multiplexing amortizes the handshake to nil.
+> - **The residual -10 % is symmetric AES-GCM body encryption** — H2 removes handshake and
+>   header-byte overhead, but every response body is still encrypted. That floor is
+>   irreducible; resumption cannot touch it (it only cheapens handshakes, already amortized
+>   here by keepalive/multiplexing).
+> - **Confirmed server-CPU-bound (re-run with the H2 phase monitored).** With h2load
+>   reordered to run between the wrk stages and the sampler at `--duration 110`, the H2
+>   window is captured: at ~400 connections the target sat at **~99–100 % CPU, nginx on all
+>   12 threads**. So **347,732 req/s is the server's ceiling** for warm H2 on this box — not
+>   a tester limit. All three rows above are therefore CPU-bound at 100 %, making this a
+>   clean same-hardware, same-CPU protocol comparison.
+> - **Tooling note:** `h2load`'s timing-based `--duration` mode reported `0 req/s` on this
+>   build despite traffic flowing, so `load-test.sh --h2` uses **count-based `-n`**, which
+>   reports correctly.
+> - **nginx RSS climbs under TLS:** peak **7.7 GB**, rising monotonically through the run and
+>   not reclaimed within it (vs ~2 GB plaintext at Layer 4). The 50 MB session cache doesn't
+>   explain it — it's per-connection TLS + request buffers retained by the allocator under
+>   churn. Watch whether it plateaus across Layers 6–8 rather than growing unbounded.
+> - **UI mix** (159k RPS, tx 9.8 Gbps) unchanged — NIC-bound, a wall TLS/H2 cannot move.
+
 Next: [Layer 6 — Async File I/O](layer-06-aio.md).

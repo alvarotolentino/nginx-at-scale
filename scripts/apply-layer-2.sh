@@ -27,4 +27,14 @@ sysctl --system >/dev/null
 nginx_reload
 log_ok "Layer 2 applied. Congestion control: $(sysctl -n net.ipv4.tcp_congestion_control)"
 
+# ---- base network tuning: NIC packet steering (RSS/aRFS/RPS) ----------------
+# Part of the base tuning every layer inherits. Introduced here at Layer 2 (the
+# TCP/IP-stack layer) so every subsequent layer is tested WITH flow steering active,
+# not just Layer 7. On a multi-queue NIC this enables hardware aRFS (ntuple) — the
+# steering that recovered static throughput 302k→545k once workers are pinned at
+# Layer 7; on a single-queue NIC it fans RX softirq across cores via RPS/RFS. aRFS is
+# harmless before pinning and load-bearing after, so applying it early is safe. The
+# script installs a systemd unit that re-applies on boot.
+"$SCRIPT_DIR/tune-network-rps.sh"
+
 "$SCRIPT_DIR/snapshot.sh" --label layer-2

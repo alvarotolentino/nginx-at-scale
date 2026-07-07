@@ -61,8 +61,22 @@ short-lived upstream connections; without them you exhaust ephemeral ports under
 sudo scripts/apply-layer-1.sh
 #   → installs the sysctl file as /etc/sysctl.d/99-nginx-perf.conf (the cumulative file
 #     every later layer appends to), writes the limits.d + systemd LimitNOFILE drop-ins,
+#     sets the CPU governor to performance (base host tuning — see below),
 #     daemon-reload, nginx reload, then snapshot --label layer-1
 ```
+
+## Base host tuning applied here: CPU governor = performance
+
+Layer 1 is the **host** layer, so it's also where the first piece of the *base tuning*
+(inherited by every later layer) is set: `set_cpu_governor_performance` in
+[_lib.sh](../../scripts/_lib.sh) forces every core's cpufreq governor to `performance` and
+persists it via a `nginx-cpu-governor.service` oneshot (sysfs governor resets on boot).
+
+This matters more than it looks. The original layer sweep ran on a *demand* governor with
+the cores downclocked, so every "100 % CPU" figure was 100 % of a **throttled** clock —
+pinning the governor to max frequency was a large share of the measured ~2× throughput
+gain. Setting it at Layer 1 means every layer below is measured at full clock. (Reverted
+to `ondemand` by [reset-baseline.sh](../../scripts/reset-baseline.sh).)
 
 ```bash
 # TESTER

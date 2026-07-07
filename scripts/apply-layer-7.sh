@@ -39,8 +39,11 @@ nginx_reload
 log_ok "Workers pinned (worker_processes=${CPUS}, affinity auto). Topology:"
 numactl --hardware
 
-# CPU affinity for nginx workers is only half the locality story: on a single-queue
-# NIC all RX softirq still lands on one core and caps throughput. Spread it (RPS/RFS).
-"$SCRIPT_DIR/tune-network-rps.sh"
+# NOTE: NIC packet steering (aRFS/RPS) is NOT applied here — it's part of the base
+# tuning, applied back at Layer 2 (tune-network-rps.sh) so every layer inherits it.
+# Pinning is the half that makes the already-active aRFS load-bearing: with workers
+# pinned, aRFS steers each flow to its worker's core (static 302k→545k). Pinning
+# WITHOUT aRFS wrecks static (-42%) — but aRFS is on from Layer 2, so that's covered.
+log_ok "aRFS/packet steering already active from Layer 2 — pinning now makes it load-bearing."
 
 "$SCRIPT_DIR/snapshot.sh" --label layer-7
