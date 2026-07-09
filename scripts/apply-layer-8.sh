@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Layer 8 — DPDK Hugepages & Environment Setup.
 # This sets up the DPDK *environment* only; binding the traffic NIC and running
-# a DPDK-aware data plane is a documented manual step (see layer-08-dpdk.md).
+# a DPDK-aware data plane is a documented manual step (see 10-layer-08-dpdk.md).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -59,7 +59,7 @@ dpdk-devbind.py --status 2>/dev/null || log_warn "dpdk-devbind.py not found in P
 
 log_warn "Manual step required: bind your TRAFFIC NIC to vfio-pci (NOT your mgmt NIC):"
 log_warn "  dpdk-devbind.py --bind=vfio-pci <PCI_ADDR>"
-log_warn "See docs/sections/layer-08-dpdk.md for the full walkthrough."
+log_warn "See docs/sections/10-layer-08-dpdk.md for the full walkthrough."
 
 # Snapshot Nginx on the kernel path now, as the before/after comparison baseline
 # against the NIC ceiling a DPDK data plane could reach.
