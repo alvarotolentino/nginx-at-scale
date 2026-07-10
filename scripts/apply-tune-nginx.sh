@@ -72,13 +72,31 @@ if [ "$DO_BROTLI" -eq 1 ]; then
   if ! grep -q 'ngx_http_brotli_static_module.so' "$CONF"; then
     sed -i "1i load_module ${MOD_DIR}/ngx_http_brotli_static_module.so;" "$CONF"
   fi
-  # Uncomment the placeholder if present, else insert next to gzip_static.
-  if grep -qE '^\s*#\s*brotli_static on;' "$CONF"; then
-    sed -i 's|^\(\s*\)#\s*brotli_static on;.*|\1brotli_static on;   # N1: serve precompressed .br|' "$CONF"
-  elif ! grep -qE '^\s*brotli_static on;' "$CONF"; then
-    sed -i 's|^\(\s*\)gzip_static on;.*|&\n\1brotli_static on;   # N1: serve precompressed .br|' "$CONF"
-  fi
-  log_ok "N1: brotli_static enabled (tester must send Accept-Encoding: br — use load-test.sh --brotli)"
+  # SCOPE brotli_static to /assets/ ONLY. A GLOBAL brotli_static makes nginx stat a
+  # missing <file>.br on every request to '/' (index.html has no .br) — MEASURED warm-h2
+  # -14% for zero benefit there. The .br payoff is entirely in /assets/ (the JS/CSS
+  # bundles), which is also where the UI-mix bytes live (MEASURED UI +128%). So enable
+  # it where the .br files are, nowhere else.
+  #
+  # 1) neutralize any stray GLOBAL brotli_static from an earlier (unscoped) run.
+  sed -i 's|^\(\s*\)brotli_static on;.*|\1# brotli_static on;  # (disabled: scoped to /assets/ below)|' "$CONF"
+  # 2) drop any previously-inserted scoped block, then re-insert fresh (idempotent).
+  sed -i '/# >>> n1-brotli-assets/,/# <<< n1-brotli-assets/d' "$CONF"
+  awk '
+    !done && /^[[:space:]]*location \/ \{/ {
+      print "        # >>> n1-brotli-assets (N1: precompressed .br, assets only) >>>"
+      print "        location /assets/ {"
+      print "            brotli_static on;"
+      print "            gzip_static on;"
+      print "        }"
+      print "        # <<< n1-brotli-assets <<<"
+      done=1
+    }
+    { print }
+  ' "$CONF" > "$CONF.tmp" && mv "$CONF.tmp" "$CONF"
+  grep -q 'location /assets/' "$CONF" \
+    && log_ok "N1: brotli_static scoped to location /assets/ (tester sends Accept-Encoding: br via load-test.sh --brotli)" \
+    || log_warn "N1: could not find 'location / {' to anchor the /assets/ block — check $CONF"
 fi
 
 # ---- N3: TLS session tickets ------------------------------------------------
