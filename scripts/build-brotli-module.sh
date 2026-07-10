@@ -36,25 +36,37 @@ if command -v apt-get >/dev/null 2>&1; then
 fi
 
 BUILD="$(mktemp -d)"
-trap 'rm -rf "$BUILD"' EXIT
 cd "$BUILD"
+LOG="/tmp/brotli-build.log"
+: > "$LOG"
+# Keep the build tree + log on failure so the error is inspectable; clean only on success.
+build_fail() { log_warn "Build failed — see $LOG (tree kept at $BUILD)"; }
+trap build_fail ERR
 
-# ---- matching nginx source (module ABI is tied to the exact version + configure) --
-CONFIGURE_ARGS="$(nginx -V 2>&1 | sed -n 's|^configure arguments: ||p')"
+# ---- sources ----------------------------------------------------------------
+# ngx_brotli --recursive brings its own brotli (deps/brotli); nginx `make modules`
+# compiles it as part of the module — no separate CMake step needed.
 curl -fsSL "https://nginx.org/download/nginx-${NGINX_VER}.tar.gz" | tar xz
 git clone --depth=1 --recurse-submodules https://github.com/google/ngx_brotli.git
 
-# ngx_brotli needs its bundled brotli built once (CMake).
-( cd ngx_brotli/deps/brotli && mkdir -p out && cd out \
-    && cmake -DCMAKE_BUILD_TYPE=Release .. >/dev/null && cmake --build . --config Release >/dev/null )
-
 cd "nginx-${NGINX_VER}"
-# Reuse the distro's configure args so the module ABI matches, add brotli as dynamic.
-eval ./configure ${CONFIGURE_ARGS} --add-dynamic-module=../ngx_brotli >/dev/null
-make -j"$(nproc)" modules >/dev/null
+# Build the module against a --with-compat nginx of the SAME version. --with-compat is
+# the supported way to make a binary-compatible dynamic module WITHOUT replaying the
+# distro's exact configure args (which reference build paths that don't exist here and
+# is what broke the first attempt). Errors are shown, not swallowed.
+log_step "configure (--with-compat --add-dynamic-module) — logging to $LOG"
+./configure --with-compat --add-dynamic-module=../ngx_brotli >>"$LOG" 2>&1
+log_step "make modules — logging to $LOG"
+make -j"$(nproc)" modules >>"$LOG" 2>&1
+
+for so in ngx_http_brotli_filter_module.so ngx_http_brotli_static_module.so; do
+  [ -f "objs/$so" ] || { echo "ERROR: objs/$so not produced — see $LOG" >&2; exit 1; }
+done
 
 install -d "$MOD_DIR"
 install -m 0644 objs/ngx_http_brotli_filter_module.so "$MOD_DIR/"
 install -m 0644 objs/ngx_http_brotli_static_module.so "$MOD_DIR/"
+trap - ERR
+rm -rf "$BUILD"
 log_ok "Installed brotli modules to ${MOD_DIR}"
 log_ok "Next: sudo scripts/apply-tune-nginx.sh --brotli   (adds load_module + brotli_static on, reloads)"
