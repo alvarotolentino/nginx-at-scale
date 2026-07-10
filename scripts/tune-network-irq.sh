@@ -87,8 +87,16 @@ if [ "$DO_REVERT" -eq 1 ]; then
   ip link set "$IFACE" mtu 1500 2>/dev/null && log_ok "MTU: reset to 1500" || true
   ethtool -A "$IFACE" autoneg on rx off tx off 2>/dev/null && log_ok "pause: disabled (autoneg back on)" || true
   ethtool -C "$IFACE" adaptive-rx off adaptive-tx off 2>/dev/null || true
-  sysctl_set net.core.netdev_budget 300
-  sysctl_set net.core.netdev_budget_usecs 2000
+  # Budget: only undo if we ever set it (keys present in the perf sysctl file), and
+  # never let a rejected write abort the rest of the revert (kernel builds differ on
+  # accepted values — a failed reset here must not leave the boot unit behind).
+  for k in net.core.netdev_budget net.core.netdev_budget_usecs; do
+    if [ -f "$PERF_SYSCTL_FILE" ] && grep -qE "^${k}\s*=" "$PERF_SYSCTL_FILE"; then
+      d=300; [ "$k" = "net.core.netdev_budget_usecs" ] && d=2000
+      sysctl -w "${k}=${d}" >/dev/null 2>&1 || log_warn "budget: could not reset $k (non-fatal)"
+      sed -i "\|^${k}\s*=|d" "$PERF_SYSCTL_FILE"
+    fi
+  done
   systemctl disable --now nginx-net-irq.service >/dev/null 2>&1 || true
   rm -f "$UNIT"; systemctl daemon-reload 2>/dev/null || true
   log_ok "Revert complete. Rings/IRQ-affinity reset to driver default on next boot."
