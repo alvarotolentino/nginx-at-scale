@@ -67,9 +67,10 @@ if [ "$DO_BROTLI" -eq 1 ]; then
     echo "ERROR: brotli module missing in ${MOD_DIR}. Run: sudo scripts/build-brotli-module.sh" >&2
     exit 1
   fi
-  # load_module lines must be at the very top (main context), before `events`.
+  # load_module must be at the very top (main context), before `events`. Static module
+  # only — N1 serves precompressed .br, so the runtime filter module isn't needed.
   if ! grep -q 'ngx_http_brotli_static_module.so' "$CONF"; then
-    sed -i "1i load_module ${MOD_DIR}/ngx_http_brotli_filter_module.so;\nload_module ${MOD_DIR}/ngx_http_brotli_static_module.so;" "$CONF"
+    sed -i "1i load_module ${MOD_DIR}/ngx_http_brotli_static_module.so;" "$CONF"
   fi
   # Uncomment the placeholder if present, else insert next to gzip_static.
   if grep -qE '^\s*#\s*brotli_static on;' "$CONF"; then

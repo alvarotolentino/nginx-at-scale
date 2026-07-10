@@ -3,8 +3,9 @@
 #
 # Why a build: Debian/RHEL nginx packages don't ship brotli. The proposal's N1
 # ("serve precompressed .br assets, ~15-20% smaller than gzip-9") needs the module.
-# Static-only, so we build just the filter+static modules as a dynamic .so matching
-# the EXACT installed nginx version, then load it with `load_module`.
+# Static-only (serve precompressed .br), so we build just the STATIC dynamic module
+# matching the EXACT installed nginx version, then load it with `load_module`. The
+# runtime filter module is skipped — it needs libbrotlienc and isn't used by N1.
 #
 # After this succeeds, enable serving with:  sudo scripts/apply-tune-nginx.sh --brotli
 #
@@ -50,23 +51,24 @@ curl -fsSL "https://nginx.org/download/nginx-${NGINX_VER}.tar.gz" | tar xz
 git clone --depth=1 --recurse-submodules https://github.com/google/ngx_brotli.git
 
 cd "nginx-${NGINX_VER}"
-# Build the module against a --with-compat nginx of the SAME version. --with-compat is
-# the supported way to make a binary-compatible dynamic module WITHOUT replaying the
-# distro's exact configure args (which reference build paths that don't exist here and
-# is what broke the first attempt). Errors are shown, not swallowed.
+# Build against a --with-compat nginx of the SAME version — the supported way to make a
+# binary-compatible dynamic module WITHOUT replaying the distro's configure args.
+#
+# N1 is STATIC-ONLY: `brotli_static` serves precompressed .br files, no runtime encoding.
+# The static module links with NO brotli library. The *filter* module (runtime brotli
+# compression) does need libbrotlienc/libbrotlicommon and is what failed to link — we
+# don't build it. So build just the static module target, not all of `make modules`.
 log_step "configure (--with-compat --add-dynamic-module) — logging to $LOG"
 ./configure --with-compat --add-dynamic-module=../ngx_brotli >>"$LOG" 2>&1
-log_step "make modules — logging to $LOG"
-make -j"$(nproc)" modules >>"$LOG" 2>&1
+log_step "make static brotli module — logging to $LOG"
+make -j"$(nproc)" objs/ngx_http_brotli_static_module.so >>"$LOG" 2>&1
 
-for so in ngx_http_brotli_filter_module.so ngx_http_brotli_static_module.so; do
-  [ -f "objs/$so" ] || { echo "ERROR: objs/$so not produced — see $LOG" >&2; exit 1; }
-done
+[ -f objs/ngx_http_brotli_static_module.so ] \
+  || { echo "ERROR: static module not produced — see $LOG" >&2; exit 1; }
 
 install -d "$MOD_DIR"
-install -m 0644 objs/ngx_http_brotli_filter_module.so "$MOD_DIR/"
 install -m 0644 objs/ngx_http_brotli_static_module.so "$MOD_DIR/"
 trap - ERR
 rm -rf "$BUILD"
-log_ok "Installed brotli modules to ${MOD_DIR}"
+log_ok "Installed brotli STATIC module to ${MOD_DIR} (filter/runtime-compression not built — not needed for N1)"
 log_ok "Next: sudo scripts/apply-tune-nginx.sh --brotli   (adds load_module + brotli_static on, reloads)"
