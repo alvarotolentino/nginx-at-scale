@@ -60,11 +60,12 @@ cd "nginx-${NGINX_VER}"
 # don't build it. So build just the static module target, not all of `make modules`.
 log_step "configure (--with-compat --add-dynamic-module) — logging to $LOG"
 ./configure --with-compat --add-dynamic-module=../ngx_brotli >>"$LOG" 2>&1
-# ngx_brotli's Makefile only exposes the `modules` target (no per-.so rule). Run it
-# SERIALLY: it links the static .so first (needs no brotli lib), THEN fails linking the
-# filter .so (-lbrotlienc). We tolerate that failure and install only the static .so.
-log_step "make modules (static .so links first; filter link failure ignored) — logging to $LOG"
-make modules >>"$LOG" 2>&1 || true
+# ngx_brotli's Makefile only exposes the `modules` target (no per-.so rule), and it
+# builds the filter module FIRST — whose link needs libbrotlienc (the bundled brotli
+# we deliberately don't build). `make -k` keeps going past that link failure so the
+# static .so (which links against NO brotli lib) still gets built.
+log_step "make -k modules (filter link failure expected+ignored; static .so is the goal) — logging to $LOG"
+make -k -j"$(nproc)" modules >>"$LOG" 2>&1 || true
 
 [ -f objs/ngx_http_brotli_static_module.so ] \
   || { echo "ERROR: static module not produced — see $LOG" >&2; exit 1; }
