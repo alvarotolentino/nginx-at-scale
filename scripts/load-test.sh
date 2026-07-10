@@ -38,6 +38,7 @@ CONNS_SET="0"     # track whether the user overrode --conns explicitly
 RUN_K6="0"
 RUN_API="0"   # API path stresses the backend, not nginx; off by default
 RUN_H2="0"    # warm-HTTP/2 (h2load) static test; off by default. See --h2 below.
+BROTLI="0"    # send Accept-Encoding: br so nginx serves precompressed .br (N1). off by default.
 # H2 load shape: HTTP/2 multiplexes many requests over FEW connections, so the
 # realistic test is a small connection count with many concurrent streams each —
 # NOT wrk's thousands of HTTP/1.1 connections. These have their own knobs so the
@@ -66,6 +67,7 @@ while [ $# -gt 0 ]; do
     --k6)         RUN_K6="1"; shift 1 ;;
     --api)        RUN_API="1"; shift 1 ;;
     --h2)           RUN_H2="1"; shift 1 ;;
+    --brotli)       BROTLI="1"; shift 1 ;;
     --h2-conns)     H2_CONNS="$2"; shift 2 ;;
     --h2-streams)   H2_STREAMS="$2"; shift 2 ;;
     --h2-requests)  H2_REQUESTS="$2"; shift 2 ;;
@@ -84,6 +86,13 @@ case "$PROFILE" in
   churn)    [ "$CONNS_SET" = "0" ] && CONNS="1000"; WRK_EXTRA=(-H "Connection: close") ;;
   *) echo "ERROR: --profile must be standard|highconn|churn (got '$PROFILE')" >&2; exit 1 ;;
 esac
+
+# N1: ask nginx for brotli-precompressed assets. wrk reuses WRK_EXTRA on the static +
+# UI stages; h2load gets its own -H below. Only meaningful once the target has
+# brotli_static on (scripts/apply-tune-nginx.sh --brotli).
+if [ "$BROTLI" = "1" ]; then
+  WRK_EXTRA+=(-H "Accept-Encoding: br")
+fi
 
 if [ -z "$TARGET" ]; then
   echo "ERROR: --target is required (e.g. --target https://10.0.0.5)" >&2
@@ -148,6 +157,7 @@ echo "Loading ${TARGET} as '${LABEL}' (tier ${TIER}) for ${DURATION}s (${THREADS
   echo "threads:  $THREADS"
   echo "conns:    $CONNS"
   echo "profile:  $PROFILE"
+  [ "$BROTLI" = "1" ] && echo "brotli:   Accept-Encoding: br (N1)"
   [ "$RUN_H2" = "1" ] && echo "h2:       ${H2_CONNS}c x ${H2_STREAMS}m, -n ${H2_REQUESTS} (count mode)"
   echo "date:     $(date '+%Y-%m-%d %H:%M:%S %z')"
   echo "tester:   $(hostname 2>/dev/null || echo unknown)"
@@ -172,7 +182,8 @@ if [ "$RUN_H2" = "1" ]; then
   # h2load does not verify the cert chain — self-signed lab cert is accepted.
   # Count-based (-n) not timing-based (--duration): see the H2_REQUESTS comment above
   # for why. -m streams multiplexed per -c connection.
-  h2load -t"${THREADS}" -c"${H2_CONNS}" -m"${H2_STREAMS}" -n"${H2_REQUESTS}" "${TARGET}/" \
+  H2_HDR=(); [ "$BROTLI" = "1" ] && H2_HDR=(-H "accept-encoding: br")   # N1
+  h2load -t"${THREADS}" -c"${H2_CONNS}" -m"${H2_STREAMS}" -n"${H2_REQUESTS}" "${H2_HDR[@]}" "${TARGET}/" \
     > "$OUT_DIR/h2load-static.txt" 2>&1 || true
 fi
 
