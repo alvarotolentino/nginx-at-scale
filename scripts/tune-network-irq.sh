@@ -85,7 +85,7 @@ if [ "$DO_REVERT" -eq 1 ]; then
   fi
   systemctl enable --now irqbalance >/dev/null 2>&1 && log_ok "irqbalance: re-enabled" || true
   ip link set "$IFACE" mtu 1500 2>/dev/null && log_ok "MTU: reset to 1500" || true
-  ethtool -A "$IFACE" rx off tx off 2>/dev/null && log_ok "pause: disabled" || true
+  ethtool -A "$IFACE" autoneg on rx off tx off 2>/dev/null && log_ok "pause: disabled (autoneg back on)" || true
   ethtool -C "$IFACE" adaptive-rx off adaptive-tx off 2>/dev/null || true
   sysctl_set net.core.netdev_budget 300
   sysctl_set net.core.netdev_budget_usecs 2000
@@ -191,8 +191,10 @@ fi
 # K3 — Ethernet pause frames (LAN-only flow control)
 # =============================================================================
 if [ "$DO_PAUSE" -eq 1 ]; then
-  ethtool -A "$IFACE" rx on tx on 2>/dev/null \
-    && log_ok "pause: RX/TX flow control on (LAN-only; fine on a two-node lab)" \
+  # MUST disable pause autoneg or the link renegotiates it back OFF (the NIC defaults
+  # to letting the switch decide, which here left RX/TX off). Set on BOTH nodes.
+  ethtool -A "$IFACE" autoneg off rx on tx on 2>/dev/null \
+    && log_ok "pause: autoneg off, RX/TX flow control on (set the SAME on the tester; LAN-only)" \
     || log_warn "pause: ethtool -A failed (driver may not support it)"
 fi
 
