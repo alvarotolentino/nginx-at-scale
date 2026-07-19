@@ -70,3 +70,5 @@ A non-empty line means the jemalloc `.so` is mapped into the Nginx process.
 tcmalloc is intentionally **excluded** from this guide. It leans on glibc internals and
 does not support musl, and for this Debian/glibc Nginx stack jemalloc is the
 battle-tested production choice. We standardize on jemalloc and do not benchmark tcmalloc.
+
+Next: [Layer 5 — TLS Hardening & Session Resumption](07-layer-05-tls.md).

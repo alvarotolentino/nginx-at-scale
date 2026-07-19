@@ -12,12 +12,16 @@ Each layer is measured the same way, split across the two nodes:
 1. **TARGET** applies + snapshots a layer: `sudo scripts/apply-layer-N.sh` → records box
    state into `results/tier-N/<label>/snapshot/`.
 2. **TARGET** samples utilization during the load window:
-   `scripts/monitor.sh --label layer-N --tier N --duration 45 &` → records the CPU /
+   `scripts/monitor.sh --label layer-N --tier N --duration 110 &` → records the CPU /
    softirq / per-service / NIC / socket time series into `results/tier-N/<label>/monitor/`.
+   110 s covers the three back-to-back load stages; `load-test.sh` prints the exact
+   suggested duration for its flags at the end of each run.
    (`apply-all-layers.sh` starts and stops this automatically around each load pause.)
 3. **TESTER** generates load for that label: `scripts/load-test.sh --target https://<ip>
-   --label layer-N --tier N` → records `wrk-static.txt`, `wrk-api.txt` into
-   `results/tier-N/<label>/load/`.
+   --label layer-N --tier N --profile highconn --h2` → records `wrk-static.txt`,
+   `wrk-ui.txt`, `h2load-static.txt` (and `wrk-api.txt` when the API phase runs) into
+   `results/tier-N/<label>/load/`. `--profile highconn` (4000 conns) spreads load across
+   all SO_REUSEPORT workers; `--h2` adds the warm-HTTP/2 stage (https target required).
 4. Copy the tester's `load/` dirs back, then on the target run
    `scripts/generate-report.sh --tier N --cost <hourly-price>`.
 

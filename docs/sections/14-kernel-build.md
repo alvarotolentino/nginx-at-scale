@@ -81,7 +81,8 @@ infrequent change. Treat it as its own labeled run so the gain is attributable:
 # TARGET (after booting the custom kernel)
 scripts/snapshot.sh --label custom-kernel
 # TESTER
-scripts/load-test.sh --target https://<ip> --label custom-kernel --tier <n>
+scripts/load-test.sh --target https://<ip> --label custom-kernel --tier <n> \
+  --profile highconn --h2
 ```
 
 Then `generate-report.sh` folds it in alongside the layers. If the delta vs. the stock

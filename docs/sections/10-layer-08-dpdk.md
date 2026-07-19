@@ -71,3 +71,5 @@ clean before/after comparison point against that NIC ceiling.
 
 Two NICs. One for DPDK traffic, one for management. Confirm the second NIC is up and
 reachable **before** binding the traffic NIC to `vfio-pci`.
+
+Next: [Section 11 — Hardware Tiers Compared](11-tiers.md).

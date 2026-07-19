@@ -76,7 +76,8 @@ sudo scripts/apply-layer-2.sh
 #     applies NIC packet steering (tune-network-rps.sh — see below), snapshot --label layer-2
 
 # TESTER
-scripts/load-test.sh --target https://<target-ip> --label layer-2 --tier <n>
+scripts/load-test.sh --target https://<target-ip> --label layer-2 --tier <n> \
+  --profile highconn --h2
 ```
 
 ## Base network tuning applied here: NIC packet steering (RSS / aRFS / RPS)

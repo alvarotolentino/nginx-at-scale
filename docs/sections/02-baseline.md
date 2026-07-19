@@ -44,10 +44,16 @@ sudo scripts/apply-baseline.sh
 #   (cp nginx/baseline.conf → /etc/nginx/nginx.conf, reload, then snapshot.sh --label baseline)
 
 # --- TARGET: sample utilization during the load window (background) ---
-scripts/monitor.sh --label baseline --tier 1 --duration 45 &
+# 110 s covers all three load stages (wrk static + wrk UI + h2load, ~30 s each + buffer);
+# load-test.sh prints the exact suggested duration for its flags at the end of each run.
+scripts/monitor.sh --label baseline --tier 1 --duration 110 &
 
 # --- TESTER: generate load against the target for the same label ---
-scripts/load-test.sh --target https://<target-ip> --label baseline --tier 1
+# --profile highconn (4000 conns) spreads load across all SO_REUSEPORT workers once
+# layer 3 lands; use it from the baseline on so every layer is comparable.
+# --h2 adds the warm-HTTP/2 h2load stage (https target required).
+scripts/load-test.sh --target https://<target-ip> --label baseline --tier 1 \
+  --profile highconn --h2
 
 # --- read the output ---
 cat results/tier-1/baseline/load/wrk-static.txt          # on the tester

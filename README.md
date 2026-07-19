@@ -72,16 +72,52 @@ the improvement delta clearly visible across hardware.
 | 03 | Layer 1 — File Descriptors & Socket Buffers | [docs/sections/03-layer-01-fd.md](docs/sections/03-layer-01-fd.md) |
 | 04 | Layer 2 — Linux TCP/IP Kernel Tuning | [docs/sections/04-layer-02-tcp.md](docs/sections/04-layer-02-tcp.md) |
 | 05 | Layer 3 — Nginx Worker & Event Model | [docs/sections/05-layer-03-events.md](docs/sections/05-layer-03-events.md) |
-| 06 | Layer 4 — Memory Allocator (jemalloc) | [docs/sections/layer-04-jemalloc.md](docs/sections/layer-04-jemalloc.md) |
+| 06 | Layer 4 — Memory Allocator (jemalloc) | [docs/sections/06-layer-04-jemalloc.md](docs/sections/06-layer-04-jemalloc.md) |
 | 07 | Layer 5 — TLS Hardening & Session Resumption | [docs/sections/07-layer-05-tls.md](docs/sections/07-layer-05-tls.md) |
-| 08 | Layer 6 — Async File I/O | [docs/sections/layer-06-aio.md](docs/sections/layer-06-aio.md) |
+| 08 | Layer 6 — Async File I/O | [docs/sections/08-layer-06-aio.md](docs/sections/08-layer-06-aio.md) |
 | 09 | Layer 7 — NUMA & CPU Affinity | [docs/sections/09-layer-07-numa.md](docs/sections/09-layer-07-numa.md) |
-| 10 | Layer 8 — DPDK & Kernel Bypass | [docs/sections/layer-08-dpdk.md](docs/sections/layer-08-dpdk.md) |
+| 10 | Layer 8 — DPDK & Kernel Bypass | [docs/sections/10-layer-08-dpdk.md](docs/sections/10-layer-08-dpdk.md) |
 | 11 | Hardware Tiers Compared | [docs/sections/11-tiers.md](docs/sections/11-tiers.md) |
 | 12 | Advanced: FreeBSD Networking Stack | [docs/sections/12-freebsd.md](docs/sections/12-freebsd.md) |
 | 13 | Results Summary & Takeaways | [docs/sections/13-results.md](docs/sections/13-results.md) |
 | 14 | Appendix: Custom Kernel Build | [docs/sections/14-kernel-build.md](docs/sections/14-kernel-build.md) |
 | 15 | Security Hardening & Attack-Surface Reduction | [docs/sections/15-security.md](docs/sections/15-security.md) |
+
+Planned next steps (kernel + nginx tuning beyond Layer 7, without DPDK) are analyzed in
+[docs/proposals/post-layer-7-tuning-proposal.md](docs/proposals/post-layer-7-tuning-proposal.md).
+
+## Measured so far — Tier 1 (`m4.metal.small`, $0.41/hr)
+
+Full Layers 1–7 sweep on a **valid rig** — target and tester are both bare-metal
+`m4.metal.small` on a one-hop 0.057 ms LAN (0 % loss), so the **target is the bottleneck**,
+as intended. Layers 1–4 plaintext HTTP; 5–7 HTTPS (TLS 1.3). Profile `highconn`
+(30 s, 12 threads, 4000 conns, 10 GbE). Async file I/O and kTLS stay opt-in/off — they
+regressed this workload (see Layers 5–6).
+
+| Test | Best RPS | Per core | RPS per $/hr | Bound by |
+|---|---|---|---|---|
+| Static — plaintext HTTP (L4) | **828,546** | 69.0 k | ~2.02 M | CPU + NIC co-limited (12 threads at 100 %, tx line rate) |
+| Static — HTTPS / TLS 1.3 (L7) | **566,257** | 47.2 k | ~1.38 M | CPU (TLS −32 % vs plaintext) |
+| Static — warm HTTP/2 + TLS (L5) | **765,276** | 63.8 k | ~1.87 M | CPU (h2 buys back TLS cost → ~92 % of plaintext) |
+| UI mix (HTML + assets + image) | **~177,000** | — | — | NIC — tx 9.84 Gbps = 10 GbE line rate |
+
+Findings worth stealing even if you read nothing else:
+
+- **Layer 3 (nginx workers + event model) is the single biggest lever: +70 % static
+  (485k → 822k)** and it fixes the API path in one step (listen_drops 158k → 51k, API
+  broken → clean). Layers 4 (jemalloc) and 7 (NUMA) are neutral on this hardware — allocator
+  isn't hot, and there's only 1 NUMA node. Layer 6 (AIO) is a mild negative on TLS.
+- The **base host tuning** (performance governor, buffered access log, open_file_cache)
+  roughly **doubled** throughput — more than any single layer — and **CPU pinning without
+  aRFS costs −42 %** on static while pinning *with* aRFS is the optimum.
+- **The wall is now physics, not config.** Static is CPU + NIC co-limited at once; the UI
+  phase is pinned at 10 GbE line rate and bleeds **40–90k retransmits/s** — a line-rate
+  buffer-overrun artifact, not tester weakness or a CPU wall. The two remaining levers:
+  shave per-request CPU, or send fewer bytes / add wire.
+
+Per-layer deltas and the full server-side cost breakdown live in
+[`results/tier-1/REPORT.md`](results/tier-1/REPORT.md) and
+[Section 09](docs/sections/09-layer-07-numa.md).
 
 ## Prerequisites
 
@@ -93,7 +129,7 @@ the improvement delta clearly visible across hardware.
 
 ## Quick Start
 
-**On the target** (bare-metal Debian 12) — one script provisions the whole stack:
+**On the target** (bare-metal Debian 12/13) — one script provisions the whole stack:
 
 ```bash
 git clone https://github.com/alvarotolentino/nginx-at-scale.git && cd nginx-at-scale
@@ -106,13 +142,20 @@ sudo scripts/apply-layer-1.sh
 **During the load window, on the target** — sample what the load costs the box:
 
 ```bash
-scripts/monitor.sh --label layer-1 --tier 1 --duration 45 &   # CPU/mem/net/socket time series
+# --duration must cover all load stages (wrk static + UI + h2load ≈ 3 × 30 s + 20 s);
+# load-test.sh prints the exact suggested value for its flags at the end of each run.
+scripts/monitor.sh --label layer-1 --tier 1 --duration 110 &   # CPU/mem/net/socket time series
 ```
 
 **On the tester** (separate node) — generate load against the target:
 
 ```bash
-scripts/load-test.sh --target https://<target-ip> --label layer-1 --tier 1
+# --profile highconn (4000 conns) spreads load across all SO_REUSEPORT workers —
+# the 400-conn default under-utilises cores from layer 3 on. --h2 adds the
+# warm-HTTP/2 h2load stage (https target required). These flags produced the
+# headline numbers below.
+scripts/load-test.sh --target https://<target-ip> --label layer-1 --tier 1 \
+  --profile highconn --h2
 ```
 
 Full sweep (target applies + snapshots every layer, pausing for the tester between each —
@@ -167,10 +210,12 @@ deploy/
   firewall/                nftables.conf (default-drop; only 22/80/443)
 nginx/                     baseline.conf, per-layer configs (loopback upstream, /var/www/1b-shop)
 kernel/                    sysctl.d snippets per layer
-benchmarks/                wrk Lua scripts, k6 scenarios
+benchmarks/                wrk Lua scripts, k6 scenarios, conn-holder (Rust concurrent-
+                           connection holder for the connection-ceiling test)
 scripts/                   install-target.sh, apply-layer-N.sh, apply-all-layers.sh,
-                           snapshot.sh + monitor.sh (target), load-test.sh (tester),
-                           generate-report.sh [--cost $/hr]
+                           tune-network-rps.sh (RSS/aRFS packet steering, run at Layer 2),
+                           snapshot.sh + monitor.sh (target), load-test.sh +
+                           concurrency-test.sh (tester), generate-report.sh [--cost $/hr]
 results/                   benchmark output per tier (<label>/{snapshot,monitor,load})
 docs/                      written guide sections
 dev/                       Docker Compose — LOCAL DEV ONLY, not the benchmark target

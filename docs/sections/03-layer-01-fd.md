@@ -80,7 +80,8 @@ to `ondemand` by [reset-baseline.sh](../../scripts/reset-baseline.sh).)
 
 ```bash
 # TESTER
-scripts/load-test.sh --target https://<target-ip> --label layer-1 --tier <n>
+scripts/load-test.sh --target https://<target-ip> --label layer-1 --tier <n> \
+  --profile highconn --h2
 ```
 
 ## Verify

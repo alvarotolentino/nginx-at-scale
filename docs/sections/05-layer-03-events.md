@@ -89,8 +89,11 @@ inherited ones — see [Section 15](15-security.md).
 # TARGET
 sudo scripts/apply-layer-3.sh    # cp the full conf → /etc/nginx/nginx.conf, nginx -t, reload, snapshot
 
-# TESTER
-scripts/load-test.sh --target https://<target-ip> --label layer-3 --tier <n>
+# TESTER — --profile highconn matters HERE especially: this layer enables
+# SO_REUSEPORT, and the 400-conn default lands unevenly on the reuseport hash,
+# leaving cores idle (the 50%-CPU plateau).
+scripts/load-test.sh --target https://<target-ip> --label layer-3 --tier <n> \
+  --profile highconn --h2
 ```
 
 ## Verify
@@ -132,4 +135,4 @@ ss -lnt | grep ':80'        # one listen socket per worker with reuseport
 > - **UI mix:** 176.7k → 167.7k RPS, still pinned at 9.84 Gbps (one-NIC line rate) — NIC-bound,
 >   not an event-model limit.
 
-Next: [Layer 4 — Memory Allocator (jemalloc)](layer-04-jemalloc.md).
+Next: [Layer 4 — Memory Allocator (jemalloc)](06-layer-04-jemalloc.md).

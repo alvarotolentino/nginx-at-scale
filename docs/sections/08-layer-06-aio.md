@@ -48,6 +48,12 @@ Nginx does **not** yet use it for networking, and `aio` does not yet target io_u
 for file reads. This is tracked upstream and is **forward-looking** — today, `aio on`
 means libaio.
 
+There is an open (unmerged) upstream PR adding io_uring for **file-cache reads**:
+[nginx/nginx#1303](https://github.com/nginx/nginx/pull/1303). We reviewed it as a
+potential alternative to this layer — spoiler: it only touches the `proxy_cache` read
+path, not static-file serving, so it would not have changed the T1 result. Full review,
+build recipe, and test plan: [Layer 6 (alternative) — io_uring](08-layer-06-io-uring.md).
+
 ## Expected impact
 
 - Lower CPU idle/iowait time on **disk-bound, large-file** workloads (workers don't block on reads).
@@ -100,3 +106,5 @@ If you switched to native **`aio on`**, then the libaio syscalls are what to loo
 ```bash
 strace -e io_submit,io_getevents -p $(pidof nginx | awk '{print $1}')
 ```
+
+Next: [Layer 7 — NUMA & CPU Affinity](09-layer-07-numa.md).

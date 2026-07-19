@@ -92,7 +92,10 @@ sudo scripts/apply-layer-5.sh
 #     cp layer-05-tls.conf → nginx.conf, reload, snapshot --label layer-5
 
 # TESTER  (wrk accepts the self-signed lab cert transparently)
-scripts/load-test.sh --target https://<target-ip> --label layer-5 --tier <n>
+# --h2 is essential here: the warm-HTTP/2 h2load stage is the test behind the
+# "TLS near-parity" claim below (wrk is HTTP/1.1-only and can't show it).
+scripts/load-test.sh --target https://<target-ip> --label layer-5 --tier <n> \
+  --profile highconn --h2
 ```
 
 ## Verify
@@ -153,4 +156,17 @@ openssl s_client -connect localhost:443 -reconnect </dev/null 2>&1 | grep -i reu
 >   churn. Watch whether it plateaus across Layers 6–8 rather than growing unbounded.
 > - **UI mix** (159k RPS, tx 9.8 Gbps) unchanged — NIC-bound, a wall TLS/H2 cannot move.
 
-Next: [Layer 6 — Async File I/O](layer-06-aio.md).
+> **Re-measured with the base tuning applied (2026-07-05).** The numbers above were taken
+> before the base host tuning (performance governor, buffered `access_log`,
+> `open_file_cache`) was folded into Layers 1–3. With it active, the same Layer-5 config
+> roughly **doubles**: wrk static **290,120 → 522,475 RPS**, warm h2
+> **348,787 → 709,877 req/s** (`results/tier-1/layer-5/load_tuned/`). Treat the table
+> above as the *protocol comparison*; treat these as the layer's real ceiling.
+>
+> **kTLS (`ssl_conf_command Options KTLS`) is a split decision, measured on the tuned
+> config** (`load_tuned_ktls/`): warm h2 **709,877 → 773,785 (+9 %)** — sendfile-from-
+> kernel pays off on multiplexed streams — but wrk HTTP/1.1 static **522,475 → 359,288
+> (-31 %)**. kTLS therefore stays **opt-in, off by default**; enable it only for an
+> H2-dominant workload and measure.
+
+Next: [Layer 6 — Async File I/O](08-layer-06-aio.md).

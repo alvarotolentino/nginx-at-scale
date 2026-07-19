@@ -64,7 +64,8 @@ sudo scripts/apply-layer-7.sh
 #     snapshot --label layer-7
 
 # TESTER
-scripts/load-test.sh --target https://<target-ip> --label layer-7 --tier <n>
+scripts/load-test.sh --target https://<target-ip> --label layer-7 --tier <n> \
+  --profile highconn --h2
 ```
 
 ## Verify
@@ -134,4 +135,8 @@ numastat -p $(pidof nginx | awk '{print $1}')        # watch for low "other_node
 >   (91k rps/core), h2 **836,843** (139k rps/core) — vs the raw pre-tuning layer-5 (290k/348k),
 >   i.e. **+88% / +140%**. Pin workers ONLY with aRFS on; without it, don't pin.
 
-Next: [Layer 8 — DPDK & Kernel Bypass](layer-08-dpdk.md).
+For what comes after this layer *without* kernel bypass — conntrack, IRQ affinity,
+retransmit hunting, brotli, the second 10 GbE port — see the
+[post-Layer-7 tuning proposal](../proposals/post-layer-7-tuning-proposal.md).
+
+Next: [Layer 8 — DPDK & Kernel Bypass](10-layer-08-dpdk.md).

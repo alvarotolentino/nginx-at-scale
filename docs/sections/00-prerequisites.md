@@ -8,8 +8,10 @@
 | **T2 — Mid Bare Metal** | 32-core, 128 GB RAM, 25 GbE | — | `c3.medium.x86` (or current 32-core SKU) |
 | **T3 — High-End Bare Metal** | 128-core, 512 GB RAM, 100 GbE | — | `c3.large.x86` (or current 128-core SKU) |
 
-T1 is deliberately the **cheapest bare-metal SKU**: 6 dedicated Zen 4 cores at $0.41/hr —
-about the hourly price of an 8-vCPU *shared* cloud VM. The tier exists to prove the
+T1 is deliberately the **cheapest bare-metal SKU**: 6 dedicated Zen 4 cores at $0.41/hr -
+about the hourly price of an 8-vCPU *shared* cloud VM.
+
+The tier exists to prove the
 efficiency thesis: tuned correctly, this small box's **RPS per core / RPS per $** beats a
 price-equivalent VM by a wide margin. Its 2× 10 GbE also matters: one NIC can serve
 traffic while the other keeps SSH alive during DPDK (Layer 8), and 10 Gbps is a real,
@@ -48,6 +50,8 @@ the very CPU being measured.
 The target is provisioned by one script. On a fresh **Debian 12** box:
 
 ```bash
+sudo apt-get update && sudo apt-get install -y git
+
 git clone https://github.com/alvarotolentino/nginx-at-scale.git && cd nginx-at-scale
 sudo scripts/install-target.sh
 ```
@@ -115,11 +119,33 @@ scripts/smoke-test.sh --target https://<target-ip>   # remote checks pass
 # which starts/stops the monitor for you around each load pause)
 sudo scripts/apply-layer-1.sh
 
-# TARGET: start sampling utilization for the load window (background)
-scripts/monitor.sh --label layer-1 --tier 1 --duration 45 &
+# TARGET: start sampling utilization for the load window (background).
+# Size --duration to cover EVERY load stage the tester will run, back-to-back:
+# wrk static + wrk UI (+ h2load if --h2), each ~30 s, plus ~20 s buffer.
+# Layers 1-4 run 2 stages (no h2): 2 x 30 s + 20 s = 80 s.
+# Layers 5+ add h2: 3 x 30 s + 20 s = 110 s. (load-test.sh prints the exact
+# suggested monitor duration for its flags at the end of each run.)
+scripts/monitor.sh --label layer-1 --tier 1 --duration 80 &
 
-# TESTER: generate load against the target for that same label
-scripts/load-test.sh --target https://<target-ip> --label layer-1 --tier 1
+# TESTER: generate load against the target for that same label.
+#   --profile highconn  4000 keepalive conns — REQUIRED from layer 3 on:
+#                       the default 400-conn 'standard' profile lands unevenly
+#                       on the SO_REUSEPORT hash and leaves cores idle (the
+#                       50%-CPU plateau). Use it everywhere for comparability.
+#   --h2                adds the warm-HTTP/2 h2load stage (400 conns x 100
+#                       streams, count mode) — the test behind the Layer-5
+#                       TLS near-parity claim. Needs an https:// target, so it
+#                       is valid ONLY from Layer 5 on (TLS/:443 arrives there).
+#   (--conns N overrides the profile count; --profile churn tests the
+#   accept path with Connection: close. See the header of load-test.sh.)
+#
+# Layers 1-4 have no TLS listener yet (baseline nginx serves :80 only), so use
+# an http:// target and DROP --h2 until Layer 5 adds the ssl listener:
+scripts/load-test.sh --target http://<target-ip> --label layer-1 --tier 1 \
+  --profile highconn
+# From Layer 5 on, switch to https:// and add --h2:
+#   scripts/load-test.sh --target https://<target-ip> --label layer-5 --tier 1 \
+#     --profile highconn --h2
 
 # Copy the tester's load/ results back to the target, then build the report there:
 scp -r results/tier-1/layer-1/load target:nginx-at-scale/results/tier-1/layer-1/
